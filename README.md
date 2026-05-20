@@ -63,6 +63,16 @@ use_native_login: false
 - **`use_native_login`**: Set this to `true` to completely bypass the isolated profile and securely mount your host machine's active `~/.gemini` folder. This passes your current host session directly into the container.
 - **`runtime`**: Dynamically injects dependencies like Python, Node.js, and system `apt` packages at boot.
 
+## 🔐 Multiple Isolated Logins
+
+One of the most powerful features of `agy-sandbox` is its ability to manage **completely separate, isolated Antigravity logins** for different projects. 
+
+Instead of constantly running `agy login` and `agy logout` when switching between personal projects, freelance clients, or work repositories, `agy-sandbox` handles it automatically:
+- Each project can define its own `profile` in `agy.yaml`.
+- The sandbox automatically spins up a headless Linux keyring database specific to that profile.
+- Authentication tokens are encrypted and persisted securely on your host machine under `~/.gemini_<profile>`.
+- When you boot the sandbox via `agy-sandbox up`, you are automatically authenticated as the correct user for that specific project!
+
 ## Architecture
 
 This tool uses a two-tier Docker architecture for maximum performance and isolation:
