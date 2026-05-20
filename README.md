@@ -1,3 +1,11 @@
+```text
+    ___   ________  __    _____                 ____                
+   /   | / ____/\ \/ /   / ___/____ _____  ____/ / /_  ____  _  __
+  / /| |/ / __   \  /    \__ \/ __ `/ __ \/ __  / __ \/ __ \| |/_/
+ / ___ / /_/ /   / /    ___/ / /_/ / / / / /_/ / /_/ / /_/ />  <  
+/_/  |_\____/   /_/    /____/\__,_/_/ /_/\__,_/_.___/\____/_/|_|  
+```
+
 # agy-sandbox
 
 A lightweight CLI tool that runs Google Antigravity and your project inside an isolated, containerized Docker environment. It allows you to sandbox the Antigravity agent in a project, control runtime dependencies dynamically, and manage distinct Google logins securely.
