@@ -1,0 +1,21 @@
+[project]
+name = "antigravity-sandbox"
+version = "0.1.0"
+description = "A Terraform-ish sandboxing wrapper for the Antigravity CLI"
+authors = [
+    { name = "Antigravity", email = "antigravity@example.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0.1",
+]
+
+[project.scripts]
+agy-sandbox = "agy_sandbox.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agy_sandbox"]

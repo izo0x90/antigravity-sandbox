@@ -1,0 +1,31 @@
+FROM ubuntu:22.04
+
+# Avoid prompts during apt installs
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update and install base utilities
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    wget \
+    jq \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv globally
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
+
+# Download and extract the Antigravity Engine
+RUN cd /opt && \
+    curl -fsSLO https://storage.googleapis.com/antigravity-public/antigravity-hub/2.0.1-6566078776737792/linux-x64/Antigravity.tar.gz && \
+    tar -xzf Antigravity.tar.gz && \
+    rm Antigravity.tar.gz
+
+# Install Antigravity CLI globally using the official installation script
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+# Ensure the locally installed CLI is on the PATH
+ENV PATH="/root/.local/bin:$PATH"
+
+# Set the entrypoint to bash by default
+CMD ["/bin/bash"]

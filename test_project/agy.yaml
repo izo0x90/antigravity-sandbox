@@ -1,0 +1,10 @@
+profile: default
+project_name: test_project
+runtime:
+  python: '3.11'
+  node: '20'
+  apt_packages:
+  - build-essential
+setup_scripts: []
+env:
+- ENVIRONMENT=development
