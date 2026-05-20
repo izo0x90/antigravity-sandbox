@@ -87,6 +87,7 @@ def run_up(config: AgyConfig) -> None:
         "--name", f"agy-sandbox-container-{config.project_name}",
         "-v", f"{host_cwd}:{workspace_path}",
         "-v", f"{profile_dir}:/root/.gemini",
+        "-v", f"{profile_dir}:/root/.config/gemini",
         "-w", workspace_path
     ]
     
