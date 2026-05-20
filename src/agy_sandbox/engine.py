@@ -47,10 +47,6 @@ def generate_dockerfile(config: AgyConfig) -> str:
             f"RUN curl -fsSL https://deb.nodesource.com/setup_{version}.x | bash - && apt-get install -y nodejs"
         )
 
-    # Setup scripts
-    for script in config.setup_scripts:
-        lines.append(f"RUN {script}")
-
     return "\n".join(lines)
 
 
@@ -112,13 +108,17 @@ def run_up(config: AgyConfig) -> None:
     for env_var in config.env:
         run_cmd.extend(["-e", env_var])
 
+    setup_commands = " && ".join(config.setup_scripts) if config.setup_scripts else "true"
+    
     startup_script = (
         "mkdir -p /root/.local/share/keyrings && "
         "if [ ! -f /root/.local/share/keyrings/default ]; then "
         "echo 'login' > /root/.local/share/keyrings/default && "
         "printf '[keyring]\\ndisplay-name=login\\nctime=0\\nmtime=0\\nlock-on-idle=false\\nlock-after=false\\n' > /root/.local/share/keyrings/login.keyring; "
         "fi && "
-        "eval $(echo 'agy' | gnome-keyring-daemon --unlock --components=secrets) && exec bash"
+        "eval $(echo 'agy' | gnome-keyring-daemon --unlock --components=secrets) && "
+        f"{setup_commands} && "
+        "exec bash"
     )
 
     run_cmd.extend([image_name, "dbus-run-session", "--", "bash", "-c", startup_script])

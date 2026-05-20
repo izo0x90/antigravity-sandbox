@@ -1,4 +1,5 @@
 import argparse
+import os
 import subprocess
 import sys
 from typing import List, Optional
@@ -19,14 +20,17 @@ def auto_init_command(args: argparse.Namespace) -> None:
         "Please analyze this project repository and automatically generate an optimal `agy.yaml` "
         "file for the agy-sandbox tool. The file should configure the appropriate python version, "
         "node version, apt_packages, and setup_scripts based on the project's codebase. "
-        "Use 'default' for profile and determine the project_name from the folder name."
+        "Use 'default' for profile and determine the project_name from the folder name. "
+        "IMPORTANT: The sandbox environment already has `uv` globally installed. Do not add `pip install uv` "
+        "or similar to setup_scripts. Just use `uv` directly if needed."
     )
     try:
-        subprocess.run(["antigravity", prompt], check=True)
+        current_dir = os.getcwd()
+        subprocess.run(["agy", "--add-dir", current_dir, "--print", prompt], check=True)
         print("Auto-init completed successfully.")
     except FileNotFoundError:
         print(
-            "Error: The 'antigravity' CLI was not found. Please ensure it is installed and on your PATH."
+            "Error: The 'agy' CLI was not found. Please ensure it is installed and on your PATH."
         )
     except subprocess.CalledProcessError as e:
         print(f"Error during auto-init: {e}")
