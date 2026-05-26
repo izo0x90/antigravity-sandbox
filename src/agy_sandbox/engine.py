@@ -5,19 +5,29 @@ from pathlib import Path
 from .config import AgyConfig
 
 
-def get_base_dir() -> str:
-    # Returns the root directory of the antigravity-sandbox project, where docker/Dockerfile.base lives
-    # Assuming this file is in src/agy_sandbox/engine.py
-    current_file = Path(__file__).resolve()
-    return str(current_file.parent.parent.parent)
-
-
 def build_base_image() -> None:
-    base_dir = get_base_dir()
-    dockerfile_path = os.path.join(base_dir, "docker", "Dockerfile.base")
-    print("Building agy-base:latest...")
+    # Look for the docker folder inside the agy_sandbox package directory
+    package_dir = Path(__file__).resolve().parent
+    dockerfile_path = package_dir / "docker" / "Dockerfile.base"
 
-    cmd = ["docker", "build", "-t", "agy-base:latest", "-f", dockerfile_path, base_dir]
+    # Fallback to dev repository structure if not found inside package
+    if not dockerfile_path.exists():
+        repo_dir = package_dir.parent.parent
+        dockerfile_path = repo_dir / "docker" / "Dockerfile.base"
+        context_dir = repo_dir
+    else:
+        context_dir = package_dir / "docker"
+
+    print("Building agy-base:latest...")
+    cmd = [
+        "docker",
+        "build",
+        "-t",
+        "agy-base:latest",
+        "-f",
+        str(dockerfile_path),
+        str(context_dir),
+    ]
     subprocess.run(cmd, check=True)
 
 
@@ -85,6 +95,12 @@ def run_up(config: AgyConfig) -> None:
 
     os.makedirs(profile_dir, exist_ok=True)
 
+    # Force-upgrade low-color or empty terminal environments to 256color & truecolor
+    term_env = os.environ.get("TERM", "xterm-256color")
+    if not term_env or term_env == "xterm":
+        term_env = "xterm-256color"
+    colorterm_env = os.environ.get("COLORTERM") or "truecolor"
+
     print(f"Starting sandbox container for project {config.project_name}...")
     run_cmd = [
         "docker",
@@ -93,6 +109,10 @@ def run_up(config: AgyConfig) -> None:
         "--rm",
         "--name",
         f"agy-sandbox-container-{config.project_name}",
+        "-e",
+        f"TERM={term_env}",
+        "-e",
+        f"COLORTERM={colorterm_env}",
         "-v",
         f"{host_cwd}:{workspace_path}",
         "-v",
@@ -108,9 +128,12 @@ def run_up(config: AgyConfig) -> None:
     for env_var in config.env:
         run_cmd.extend(["-e", env_var])
 
-    setup_commands = " && ".join(config.setup_scripts) if config.setup_scripts else "true"
-    
+    setup_commands = (
+        " && ".join(config.setup_scripts) if config.setup_scripts else "true"
+    )
+
     startup_script = (
+        "echo 'force_color_prompt=yes' >> /root/.bashrc && "
         "mkdir -p /root/.local/share/keyrings && "
         "if [ ! -f /root/.local/share/keyrings/default ]; then "
         "echo 'login' > /root/.local/share/keyrings/default && "

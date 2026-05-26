@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     dbus-x11 \
     gnome-keyring \
+    ncurses-term \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv globally
