@@ -13,7 +13,21 @@ RUN apt-get update && apt-get install -y \
     dbus-x11 \
     gnome-keyring \
     ncurses-term \
+    ncurses-bin \
     && rm -rf /var/lib/apt/lists/*
+
+# Download and compile terminfo definitions for popular modern terminals
+RUN mkdir -p /lib/terminfo \
+    && curl -sSL https://raw.githubusercontent.com/kovidgoyal/kitty/master/terminfo/kitty.terminfo -o /tmp/kitty.terminfo \
+    && tic -x -o /lib/terminfo /tmp/kitty.terminfo \
+    && curl -sSL https://raw.githubusercontent.com/alacritty/alacritty/master/extra/alacritty.info -o /tmp/alacritty.terminfo \
+    && tic -x -o /lib/terminfo /tmp/alacritty.terminfo \
+    && curl -sSL https://raw.githubusercontent.com/ghostty-org/ghostty/main/terminfo/ghostty.terminfo -o /tmp/ghostty.terminfo \
+    && tic -x -o /lib/terminfo /tmp/ghostty.terminfo \
+    && curl -sSL https://raw.githubusercontent.com/wezterm/wezterm/main/termwiz/data/wezterm.terminfo -o /tmp/wezterm.terminfo \
+    && tic -x -o /lib/terminfo /tmp/wezterm.terminfo \
+    && rm -f /tmp/*.terminfo
+
 
 # Install uv globally
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh

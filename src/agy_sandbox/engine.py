@@ -95,9 +95,23 @@ def run_up(config: AgyConfig) -> None:
 
     os.makedirs(profile_dir, exist_ok=True)
 
-    # Force-upgrade low-color or empty terminal environments to 256color & truecolor
+    # Force-upgrade low-color or empty terminal environments to 256color & truecolor,
+    # or fallback on unsupported/exotic terminals to prevent "unknown terminal type" errors.
+    SUPPORTED_TERMINALS = {
+        "xterm",
+        "xterm-color",
+        "xterm-256color",
+        "screen",
+        "screen-256color",
+        "tmux",
+        "tmux-256color",
+        "xterm-kitty",
+        "alacritty",
+        "ghostty",
+        "wezterm",
+    }
     term_env = os.environ.get("TERM", "xterm-256color")
-    if not term_env or term_env == "xterm":
+    if not term_env or term_env not in SUPPORTED_TERMINALS:
         term_env = "xterm-256color"
     colorterm_env = os.environ.get("COLORTERM") or "truecolor"
 
