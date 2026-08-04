@@ -5,6 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Update and install base utilities
 RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libssl-dev \
     curl \
     git \
     wget \
@@ -14,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     gnome-keyring \
     ncurses-term \
     ncurses-bin \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and compile terminfo definitions for popular modern terminals
@@ -38,11 +42,24 @@ RUN cd /opt && \
     tar -xzf Antigravity.tar.gz && \
     rm Antigravity.tar.gz
 
-# Install Antigravity CLI globally using the official installation script
+# Create standard unprivileged agent user (UID 1000) for sbx compatibility
+RUN groupadd --gid 1000 agent \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
+    && echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Switch to the unprivileged agent user context
+USER agent
+WORKDIR /home/agent
+
+# Install Antigravity CLI as the agent user
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 
-# Ensure the locally installed CLI is on the PATH
-ENV PATH="/root/.local/bin:$PATH"
+# Ensure local bin is on the PATH
+ENV PATH="/home/agent/.local/bin:$PATH"
+
+# Switch back to root user context by default so downstream Dockerfiles compile cleanly
+USER root
+WORKDIR /
 
 # Set the entrypoint to bash by default
 CMD ["/bin/bash"]

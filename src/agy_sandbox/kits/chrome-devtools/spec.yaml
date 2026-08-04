@@ -1,0 +1,107 @@
+schemaVersion: "1"
+kind: mixin
+name: chrome-devtools
+displayName: Chrome DevTools MCP Kit
+description: Headless Chrome + chrome-devtools-mcp MCP server for browser automation/debugging
+
+caps:
+  network:
+    allow:
+      - "registry.npmjs.org:443"
+      - "registry.yarnpkg.com:443"
+      - "nodejs.org:443"
+      - "*:443"
+      - "*:80"
+
+commands:
+  startup:
+    - command:
+        - "bash"
+        - "-c"
+        - |
+          # 1. Install container-native snap-free Chromium on first startup (idempotent)
+          if ! command -v chromium &>/dev/null && ! command -v chromium-browser &>/dev/null; then
+            echo "-> Installing native Chromium (snap-free)..."
+            sudo apt-get update
+            sudo apt-get install -y curl gnupg
+            sudo rm -f /usr/share/keyrings/debian-archive-keyring.gpg /usr/share/keyrings/debian-security-archive-keyring.gpg
+            sudo curl -fsSL https://ftp-master.debian.org/keys/archive-key-12.asc | sudo gpg --dearmor -o /usr/share/keyrings/debian-archive-keyring.gpg
+            sudo curl -fsSL https://ftp-master.debian.org/keys/archive-key-12-security.asc | sudo gpg --dearmor -o /usr/share/keyrings/debian-security-archive-keyring.gpg
+            sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm main" > /etc/apt/sources.list.d/debian-bookworm.list'
+            sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/debian-security-archive-keyring.gpg] http://security.debian.org/debian-security bookworm-security main" >> /etc/apt/sources.list.d/debian-bookworm.list'
+            sudo sh -c 'printf "Package: chromium* chromium-driver*\nPin: release n=bookworm\nPin-Priority: 700\n\nPackage: chromium* chromium-driver*\nPin: release n=bookworm-security\nPin-Priority: 700\n" > /etc/apt/preferences.d/chromium.pref'
+            sudo apt-get update
+            sudo apt-get install -y chromium fonts-liberation
+          else
+            echo "-> Chromium is already installed."
+          fi
+
+          # 2. Start container-native headless Chromium
+          echo "-> Starting headless Chromium on port 9222..."
+          if command -v chromium &>/dev/null; then
+            CHROMIUM_BIN=chromium
+          elif command -v chromium-browser &>/dev/null; then
+            CHROMIUM_BIN=chromium-browser
+          fi
+          
+          if [ ! -z "$CHROMIUM_BIN" ]; then
+            rm -f /tmp/chrome-profile-stable/SingletonLock
+            $CHROMIUM_BIN \
+              --headless \
+              --remote-debugging-port=9222 \
+              --remote-debugging-address=127.0.0.1 \
+              --disable-gpu \
+              --no-sandbox \
+              --disable-dev-shm-usage \
+              --user-data-dir=/tmp/chrome-profile-stable > /tmp/chromium-headless.log 2>&1 &
+          fi
+
+          # 3. Install newest version of chrome-devtools-mcp globally (idempotent)
+          if ! npm list -g chrome-devtools-mcp &>/dev/null; then
+            echo "-> Installing newest version of chrome-devtools-mcp globally..."
+            sudo npm install -g chrome-devtools-mcp@latest
+          else
+            echo "-> chrome-devtools-mcp is already installed globally."
+          fi
+
+          # 4. Non-destructively merge chrome-devtools config into agent configs (Antigravity & OMP)
+          echo "-> Safely merging chrome-devtools config into agent configs..."
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+
+            // 1. Antigravity MCP configuration
+            const agyPath = "/home/agent/.gemini/config/mcp_config.json";
+            let agyConfig = { mcpServers: {} };
+            try {
+              if (fs.existsSync(agyPath)) {
+                const content = fs.readFileSync(agyPath, "utf8").trim();
+                if (content) agyConfig = JSON.parse(content);
+              }
+            } catch (e) {}
+            if (!agyConfig.mcpServers) agyConfig.mcpServers = {};
+            agyConfig.mcpServers["chrome-devtools"] = {
+              command: "chrome-devtools-mcp",
+              args: ["--browser-url=http://127.0.0.1:9222", "--no-usage-statistics"]
+            };
+            fs.mkdirSync(path.dirname(agyPath), { recursive: true });
+            fs.writeFileSync(agyPath, JSON.stringify(agyConfig, null, 2), "utf8");
+
+            // 2. OMP native browser CDP configuration
+            const ompPath = "/home/agent/.omp/config.json";
+            let ompConfig = {};
+            try {
+              if (fs.existsSync(ompPath)) {
+                const content = fs.readFileSync(ompPath, "utf8").trim();
+                if (content) ompConfig = JSON.parse(content);
+              }
+            } catch (e) {}
+            if (!ompConfig.browser) ompConfig.browser = {};
+            ompConfig.browser.cdpUrl = "http://127.0.0.1:9222";
+            ompConfig.browser.executablePath = "/usr/bin/chromium";
+            ompConfig.browser.args = ["--no-sandbox", "--disable-dev-shm-usage"];
+            fs.mkdirSync(path.dirname(ompPath), { recursive: true });
+            fs.writeFileSync(ompPath, JSON.stringify(ompConfig, null, 2), "utf8");
+          '
+      user: "1000"
+      description: "Pre-spawn Chromium, configure chrome-devtools MCP server"

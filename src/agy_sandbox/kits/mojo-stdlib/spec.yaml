@@ -1,0 +1,43 @@
+schemaVersion: "1"
+kind: mixin
+name: mojo-stdlib
+displayName: Mojo Standard Library Developer Kit
+description: Bazel/Bazelisk, LLVM lit, and build toolchain for modularml/mojo standard library development
+
+caps:
+  network:
+    allow:
+      - "github.com:443"
+      - "objects.githubusercontent.com:443"
+      - "pypi.org:443"
+      - "files.pythonhosted.org:443"
+      - "*:443"
+      - "*:80"
+
+commands:
+  startup:
+    - command:
+        - "bash"
+        - "-c"
+        - |
+          echo "-> Initializing Mojo Standard Library Developer Kit..."
+
+          # 1. Install Bazelisk (Bazel version manager) globally if bazel is missing
+          if ! command -v bazel &>/dev/null; then
+            ARCH=$(dpkg --print-architecture)
+            echo "-> Installing Bazelisk binary for ${ARCH}..."
+            sudo curl -fsSL "https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${ARCH}" -o /usr/local/bin/bazel
+            sudo chmod +x /usr/local/bin/bazel
+          fi
+
+          # 2. Install LLVM Integrated Tester (lit) globally for stdlib test suite execution
+          if ! command -v lit &>/dev/null; then
+            echo "-> Installing LLVM lit test runner..."
+            sudo uv pip install --system lit || sudo pip install lit
+          fi
+
+          echo "-> Mojo Standard Library Developer Kit ready:"
+          echo "   * Bazel launcher: $(command -v bazel)"
+          echo "   * LLVM lit runner: $(command -v lit)"
+      user: "1000"
+      description: "Install Bazelisk and LLVM lit for standard library compilation and testing"

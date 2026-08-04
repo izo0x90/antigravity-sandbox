@@ -1,0 +1,21 @@
+schemaVersion: "1"
+kind: mixin
+name: omp
+displayName: OMP (oh-my-pi) Agent Harness Kit
+description: Terminal AI coding agent and tool harness
+
+caps:
+  network:
+    allow:
+      - "*:443"
+      - "*:80"
+
+commands:
+  startup:
+    - command:
+        - "bash"
+        - "-c"
+        - |
+          mkdir -p /home/agent/.omp
+      user: "1000"
+      description: "Initialize OMP harness user configuration directory"

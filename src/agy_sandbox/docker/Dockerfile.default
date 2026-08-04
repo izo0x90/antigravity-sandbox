@@ -1,0 +1,49 @@
+# Default Antigravity Sandbox Development Environment Dockerfile
+#
+# This template defines the base runtimes for your sandbox environment.
+# It is loaded by default from the agy-sandbox package directory.
+#
+# To copy this Dockerfile to your project root for full local customization, run:
+#   agy-sandbox init --dockerfile
+#
+# Custom build arguments (ARGs) below are dynamically overridden via your 'agy.yaml'.
+
+ARG BASE_IMAGE=agy-base:latest
+FROM ${BASE_IMAGE}
+
+# Define build arguments with default values (overridden by build_args in agy.yaml)
+ARG PYTHON_VERSION=3.11
+ARG NODE_VERSION=20
+ARG RUST_VERSION=stable
+ARG MOJO_VERSION=latest
+
+# Set global environment variables so cargo, rustup, pixi, and mojo are accessible to all users
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PIXI_HOME=/usr/local/pixi \
+    PATH=/usr/local/cargo/bin:/usr/local/pixi/bin:$PATH
+
+# --- RUNTIME SETUP ---
+
+# Install Python and dynamically symlink to standard global bin paths.
+# No hardcoded architecture or directory assumptions are used here!
+RUN uv python install ${PYTHON_VERSION} && \
+    ln -sf $(uv python find ${PYTHON_VERSION}) /usr/local/bin/python && \
+    ln -sf $(uv python find ${PYTHON_VERSION}) /usr/local/bin/python3
+
+# Install Node.js via standard NodeSource Node.js Binary Distributions
+RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Rust toolchain (cargo, rustc, rustup) globally
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal && \
+    chmod -R a+w /usr/local/cargo /usr/local/rustup
+
+# Install Pixi and global Modular Mojo / MAX toolchain
+RUN if [ "${MOJO_VERSION}" != "none" ]; then \
+      curl -fsSL https://pixi.sh/install.sh | PIXI_HOME=/usr/local/pixi sh && \
+      chmod -R a+w /usr/local/pixi && \
+      pixi global install --channel https://conda.modular.com/max-nightly --channel conda-forge mojo && \
+      chmod -R a+w /usr/local/pixi ; \
+    fi

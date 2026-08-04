@@ -8,7 +8,7 @@
 
 # agy-sandbox
 
-A lightweight CLI tool that runs Google Antigravity and your project inside an isolated, containerized Docker environment. It allows you to sandbox the Antigravity agent in a project, control runtime dependencies dynamically, and manage distinct Google logins securely.
+A lightweight CLI tool that runs Google Antigravity and your project inside an isolated, containerized Docker environment. It supports dynamic language runtimes (Python, Node.js, Rust, Modular Mojo), Docker Sandboxes (`sbx`), OMP harness integration, and secure, profile-isolated Google logins.
 
 ## Prerequisites
 
@@ -25,71 +25,94 @@ uv tool install -e .
 
 ## Usage & Commands
 
-- `agy-sandbox init`
-  Generates a default `agy.yaml` configuration file in your project.
+- `agy-sandbox init`  
+  Generates a default `agy.yaml` configuration file in your project workspace.  
+  Options:
+  - `--sbx`: Enable Docker Sandboxes (`sbx`) mode.
+  - `--omp`: Configure the OMP (Oh My Pi) harness.
+  - `--clone`: Enable isolated git clone mode inside the sandbox.
+  - `--dockerfile`: Scaffold a local, customizable `Dockerfile.agy`.
+  - `--with-kit <kit>`: Seed a bundled kit (e.g. `chrome-devtools`, `mojo-stdlib`).
 
-- `agy-sandbox auto-init` *(Optional)*
-  Uses your host machine's `agy` engine to intelligently scan the project and generate an optimal `agy.yaml` tailored to your codebase.
+- `agy-sandbox auto-init`  
+  Scans project files (such as `Cargo.toml`, `pyproject.toml`, `package.json`, `pixi.toml`, `*.mojo`) and generates a tailored `agy.yaml`. Accepts `--sbx`, `--omp`, `--clone`, `--agent <agent>`, and `--with-kit <kit>`.
 
-- `agy-sandbox update-base`
-  Pulls the latest Antigravity engine and CLI from Google and bakes them securely into the local `agy-base:latest` Docker image. Run this whenever you want to update the agent.
+- `agy-sandbox up`  
+  Launches the sandbox container and opens an interactive terminal session.  
+  Use `--rebuild` to force rebuild custom images or sandboxes.
 
-- `agy-sandbox up`
-  Dynamically builds the project container and launches an interactive bash session with your workspace mounted.
+- `agy-sandbox down`  
+  Stops and removes the running sandbox container for the current project.
 
-- `agy-sandbox down`
-  Forcefully stops and removes the running sandbox container for the current project.
+- `agy-sandbox update-base`  
+  Pulls the latest Antigravity engine and CLI from Google and bakes them into `agy-base:latest`.
+
+- `agy-sandbox kits list`  
+  Lists all available bundled mixin kits.
+
+- `agy-sandbox kits add <name>`  
+  Adds a bundled kit (e.g., `chrome-devtools`, `mojo-stdlib`, `omp`) to your project's `agy.yaml`.
 
 ## Configuration (`agy.yaml`)
 
-The environment is declaratively configured via the `agy.yaml` file in the root of your project:
+Your sandbox environment is configured via `agy.yaml` in your project root:
 
 ```yaml
-profile: default_project
+profile: default
 project_name: my_app
-runtime:
-  python: "3.11"
-  node: "20"
-  apt_packages:
-    - build-essential
+build_args:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
+  RUST_VERSION: "stable"
+  MOJO_VERSION: "latest"
 setup_scripts:
   - npm install
+  - pip install -r requirements.txt
 env:
   - ENVIRONMENT=development
 use_native_login: false
+sbx:
+  enabled: false
+  agent: agy
+  clone: false
+  kits: []
 ```
 
-- **`profile`**: Namespaces your Google login token. `profile: client_a` will isolate the agent's authentication to a `~/.gemini_client_a` folder on your host machine. This prevents cross-contamination of accounts.
-- **`use_native_login`**: Set this to `true` to completely bypass the isolated profile and securely mount your host machine's active `~/.gemini` folder. This passes your current host session directly into the container.
-- **`runtime`**: Dynamically injects dependencies like Python, Node.js, and system `apt` packages at boot.
+### Language Runtimes (`build_args`)
+- **`PYTHON_VERSION`**: Python version installed via `uv`.
+- **`NODE_VERSION`**: Node.js version installed via NodeSource.
+- **`RUST_VERSION`**: Rust toolchain (`cargo`, `rustc`, `rustup`) version.
+- **`MOJO_VERSION`**: Modular Mojo & MAX platform version installed via `pixi` and Modular Conda channels. Set to `"none"` to skip.
+
+## Bundled Kits
+
+- **`chrome-devtools`**: Spawns headless Chromium with the `chrome-devtools-mcp` server for browser automation and debugging.
+- **`omp`**: Terminal AI coding agent and tool harness (Oh My Pi).
+- **`mojo-stdlib`**: Installs Bazelisk/Bazel launcher and LLVM `lit` test runner for compiling and testing the `modularml/mojo` standard library.
 
 ## 🔐 Multiple Isolated Logins
 
-One of the most powerful features of `agy-sandbox` is its ability to manage **completely separate, isolated Antigravity logins** for different projects. 
-
-Instead of constantly running `agy login` and `agy logout` when switching between personal projects, freelance clients, or work repositories, `agy-sandbox` handles it automatically:
-- Each project can define its own `profile` in `agy.yaml`.
-- The sandbox automatically spins up a headless Linux keyring database specific to that profile.
-- Authentication tokens are encrypted and persisted securely on your host machine under `~/.gemini_<profile>`.
-- When you boot the sandbox via `agy-sandbox up`, you are automatically authenticated as the correct user for that specific project!
+`agy-sandbox` manages isolated Antigravity logins across projects without frequent logging in and out:
+- Each project sets its `profile` in `agy.yaml`.
+- The sandbox runs an isolated headless Linux keyring database.
+- Tokens are encrypted and stored under `~/.gemini_<profile>` on your host.
+- Running `agy-sandbox up` authenticates you as the correct user for that project.
+- Set `use_native_login: true` to share your host's active `~/.gemini` folder directly.
 
 ## Architecture
 
-This tool uses a two-tier Docker architecture for maximum performance and isolation:
-1. A static `Dockerfile.base` caches the heavy Google Antigravity engine, ensuring it doesn't need to be downloaded repeatedly.
-2. A dynamically generated Dockerfile handles project-specific configurations (like Python and Node runtimes) to boot up quickly without polluting the base image.
+1. **`Dockerfile.base`**: Static base image caching the Antigravity engine, C build tools (`build-essential`, `pkg-config`, `libssl-dev`), terminal definitions, and base setup.
+2. **`Dockerfile.default`**: Dynamic layer installing configured language runtimes (Python, Node.js, Rust, Pixi/Mojo).
+3. **`Dockerfile.omp`**: Multi-arch base layer supporting OMP harness binaries (`arm64` and `x64`).
+4. **Runner Architecture**: Modular `DockerRunner` and `SbxRunner` engines handling standard Docker containers and Docker Sandboxes (`sbx`).
 
 ## Contributing
 
-We welcome contributions to make `agy-sandbox` even better!
-
-- **Reporting Issues:** Please file any bugs or feature requests in the repository's issue tracker.
-- **Development Setup:** 
-  1. Clone this repository.
-  2. Make your code changes in the `src/` directory.
-  3. Test your changes locally by running `uv tool install -e .` to apply your local edits to your global installation.
-- **Pull Request Process:** Fork the repository, create a feature branch (`git checkout -b feature/my-new-thing`), commit your changes, and submit a PR against the `main` branch.
+1. Clone this repository.
+2. Make changes under `src/`.
+3. Run `uv tool install -e .` to apply local edits.
+4. Run unit tests with `python -m unittest discover tests` and linter with `uv run ruff check .`.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) for details.

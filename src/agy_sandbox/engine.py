@@ -1,172 +1,63 @@
-import os
-import subprocess
-import tempfile
-from pathlib import Path
 from .config import AgyConfig
+from .git_guardian import check_for_unsaved_sandbox_work
+from .runners.docker import DockerRunner
+from .runners.sbx import SbxRunner, remove_sandbox, sandbox_exists
 
 
 def build_base_image() -> None:
-    # Look for the docker folder inside the agy_sandbox package directory
-    package_dir = Path(__file__).resolve().parent
-    dockerfile_path = package_dir / "docker" / "Dockerfile.base"
+    DockerRunner.build_base_image()
 
-    # Fallback to dev repository structure if not found inside package
-    if not dockerfile_path.exists():
-        repo_dir = package_dir.parent.parent
-        dockerfile_path = repo_dir / "docker" / "Dockerfile.base"
-        context_dir = repo_dir
+
+def build_omp_base_image() -> None:
+    DockerRunner.build_omp_base_image()
+
+
+def build_project_image(config: AgyConfig) -> str:
+    return DockerRunner.build_project_image(config)
+
+
+def run_up_sbx(config: AgyConfig, image_name: str, rebuild: bool = False) -> None:
+    SbxRunner.run_sandbox(config, image_name, rebuild=rebuild)
+
+
+def run_up_docker(config: AgyConfig, image_name: str) -> None:
+    DockerRunner.run_container(config, image_name)
+
+
+def run_up(config: AgyConfig, rebuild: bool = False) -> None:
+    image_name = build_project_image(config)
+    if config.sbx.enabled:
+        run_up_sbx(config, image_name, rebuild=rebuild)
     else:
-        context_dir = package_dir / "docker"
-
-    print("Building agy-base:latest...")
-    cmd = [
-        "docker",
-        "build",
-        "-t",
-        "agy-base:latest",
-        "-f",
-        str(dockerfile_path),
-        str(context_dir),
-    ]
-    subprocess.run(cmd, check=True)
+        run_up_docker(config, image_name)
 
 
-def generate_dockerfile(config: AgyConfig) -> str:
-    lines = ["FROM agy-base:latest"]
-
-    # Optional apt packages
-    if config.runtime.apt_packages:
-        packages = " ".join(config.runtime.apt_packages)
-        lines.append(
-            f"RUN apt-get update && apt-get install -y {packages} && rm -rf /var/lib/apt/lists/*"
-        )
-
-    # Install Python via uv
-    if config.runtime.python:
-        version = config.runtime.python
-        lines.append(f"RUN uv python install {version}")
-        # Make the uv python the default python on PATH
-        lines.append(
-            f'ENV PATH="/root/.local/share/uv/python/cpython-{version}-linux-x86_64-gnu/bin:$PATH"'
-        )
-
-    # Install Node via NodeSource
-    if config.runtime.node:
-        version = config.runtime.node
-        lines.append(
-            f"RUN curl -fsSL https://deb.nodesource.com/setup_{version}.x | bash - && apt-get install -y nodejs"
-        )
-
-    return "\n".join(lines)
+def run_down_sbx(config: AgyConfig) -> None:
+    SbxRunner.stop_sandbox(config)
 
 
-def run_up(config: AgyConfig) -> None:
-    dockerfile_content = generate_dockerfile(config)
-    image_name = f"agy-sandbox-{config.project_name}"
-
-    # Create temp dockerfile to build from
-    with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-        f.write(dockerfile_content)
-        temp_dockerfile_path = f.name
-
-    try:
-        print(f"Building project image: {image_name}...")
-        build_cmd = [
-            "docker",
-            "build",
-            "-t",
-            image_name,
-            "-f",
-            temp_dockerfile_path,
-            ".",
-        ]
-        subprocess.run(build_cmd, check=True)
-    finally:
-        os.unlink(temp_dockerfile_path)
-
-    # Calculate mounts
-    host_cwd = os.getcwd()
-    workspace_path = config.workspace_path or host_cwd
-
-    if config.use_native_login:
-        profile_dir = os.path.expanduser("~/.gemini")
-    else:
-        profile_dir = os.path.expanduser(f"~/.gemini_{config.profile}")
-
-    os.makedirs(profile_dir, exist_ok=True)
-
-    # Force-upgrade low-color or empty terminal environments to 256color & truecolor,
-    # or fallback on unsupported/exotic terminals to prevent "unknown terminal type" errors.
-    SUPPORTED_TERMINALS = {
-        "xterm",
-        "xterm-color",
-        "xterm-256color",
-        "screen",
-        "screen-256color",
-        "tmux",
-        "tmux-256color",
-        "xterm-kitty",
-        "alacritty",
-        "ghostty",
-        "wezterm",
-    }
-    term_env = os.environ.get("TERM", "xterm-256color")
-    if not term_env or term_env not in SUPPORTED_TERMINALS:
-        term_env = "xterm-256color"
-    colorterm_env = os.environ.get("COLORTERM") or "truecolor"
-
-    print(f"Starting sandbox container for project {config.project_name}...")
-    run_cmd = [
-        "docker",
-        "run",
-        "-it",
-        "--rm",
-        "--name",
-        f"agy-sandbox-container-{config.project_name}",
-        "-e",
-        f"TERM={term_env}",
-        "-e",
-        f"COLORTERM={colorterm_env}",
-        "-v",
-        f"{host_cwd}:{workspace_path}",
-        "-v",
-        f"{profile_dir}:/root/.gemini",
-        "-v",
-        f"{profile_dir}:/root/.config/gemini",
-        "-v",
-        f"{profile_dir}/keyrings:/root/.local/share/keyrings",
-        "-w",
-        workspace_path,
-    ]
-
-    for env_var in config.env:
-        run_cmd.extend(["-e", env_var])
-
-    setup_commands = (
-        " && ".join(config.setup_scripts) if config.setup_scripts else "true"
-    )
-
-    startup_script = (
-        "echo 'force_color_prompt=yes' >> /root/.bashrc && "
-        "mkdir -p /root/.local/share/keyrings && "
-        "if [ ! -f /root/.local/share/keyrings/default ]; then "
-        "echo 'login' > /root/.local/share/keyrings/default && "
-        "printf '[keyring]\\ndisplay-name=login\\nctime=0\\nmtime=0\\nlock-on-idle=false\\nlock-after=false\\n' > /root/.local/share/keyrings/login.keyring; "
-        "fi && "
-        "eval $(echo 'agy' | gnome-keyring-daemon --unlock --components=secrets) && "
-        f"{setup_commands} && "
-        "exec bash"
-    )
-
-    run_cmd.extend([image_name, "dbus-run-session", "--", "bash", "-c", startup_script])
-
-    subprocess.run(run_cmd)
+def run_down_docker(config: AgyConfig) -> None:
+    DockerRunner.stop_container(config)
 
 
 def run_down(config: AgyConfig) -> None:
-    container_name = f"agy-sandbox-container-{config.project_name}"
-    print(f"Stopping container {container_name} (if running)...")
+    if config.sbx.enabled:
+        run_down_sbx(config)
+    else:
+        run_down_docker(config)
 
-    # We ignore errors here in case it's already stopped
-    subprocess.run(["docker", "stop", container_name], capture_output=True)
-    subprocess.run(["docker", "rm", container_name], capture_output=True)
+
+__all__ = [
+    "build_base_image",
+    "build_omp_base_image",
+    "build_project_image",
+    "check_for_unsaved_sandbox_work",
+    "remove_sandbox",
+    "run_down",
+    "run_down_docker",
+    "run_down_sbx",
+    "run_up",
+    "run_up_docker",
+    "run_up_sbx",
+    "sandbox_exists",
+]
