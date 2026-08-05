@@ -13,6 +13,8 @@ caps:
       - "files.pythonhosted.org:443"
       - "*:443"
       - "*:80"
+      - "*:22"
+      - "*:53"
 
 commands:
   startup:

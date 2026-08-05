@@ -8,16 +8,21 @@
 
 # agy-sandbox
 
-A lightweight CLI tool that runs Google Antigravity and your project inside an isolated, containerized Docker environment. It supports dynamic language runtimes (Python, Node.js, Rust, Modular Mojo), Docker Sandboxes (`sbx`), OMP harness integration, and secure, profile-isolated Google logins.
+The quickest and easiest way to spin up sandboxed development environments using Docker Sandboxes (`sbx`) with all native toolchains and agent dependencies pre-installed.
+
+`agy-sandbox` provisions profile-isolated microVM sandboxes for terminal AI coding agents and interactive development. It bridges custom Docker image building with Docker Sandbox security:
+
+- **Custom Docker Images in Sandboxes**: Build custom project images (`Dockerfile.agy` or base layers) with any native build dependencies, system packages, or toolchains installed, and run them inside isolated microVM sandboxes (`sbx`).
+- **Full Development & Agent Runtimes**: Out-of-the-box support for AI coding agents (Google Antigravity, Anthropic Claude Code, OpenCode CLI, OpenAI Codex CLI, Oh My Pi) alongside native compilers (`rustc`, `gcc`), runtimes (`python3`, `node`, `mojo`), and package managers (`uv`, `npm`, `cargo`, `pixi`).
+- **Profile-Isolated Workspaces**: Separate logins, tokens, and microVM instances per project and profile, preventing credential bleed across client environments.
+- **Active State Protection**: Code Guardian automatically detects active TUI sessions and uncommitted code before container destruction.
 
 ## Prerequisites
 
-- **Docker:** Must be installed and running on your host machine.
-- **uv:** For installing the Python CLI tool globally.
+- **Docker:** Installed and running (Docker Desktop with Docker Sandboxes / `sbx` enabled).
+- **uv:** For global Python CLI installation.
 
 ## Installation
-
-Install the CLI globally directly from this repository using `uv`:
 
 ```bash
 uv tool install -e .
@@ -25,41 +30,75 @@ uv tool install -e .
 
 ## Usage & Commands
 
+### ⚡ Quick Start: Smart Auto-Init (`auto-init`)
+
+Stop writing config files by hand. `agy-sandbox auto-init` inspects your codebase in **strict read-only mode** and automatically builds a lean, tailor-made `agy.yaml` specification for your project.
+
+```bash
+# Auto-detect project runtimes and generate agy.yaml
+agy-sandbox auto-init
+
+# Auto-init with specific agent harness and Docker Sandboxes enabled
+agy-sandbox auto-init --agent claude --sbx
+
+# Auto-init for OMP or Prime Agent with extra mixin kits
+agy-sandbox auto-init --prime --with-kit chrome-devtools
+agy-sandbox auto-init --omp
+```
+
+#### How `auto-init` Works:
+1. **Read-Only Codebase Analysis**: Invokes your choice of installed AI agent (`agy`, `claude`, `opencode`, `codex`, `omp`) or auto-discovers what's available on `$PATH`. The agent analyzes manifest files (`pyproject.toml`, `package.json`, `Cargo.toml`, `pixi.toml`, `mojoproject.toml`) in 100% read-only/plan mode—zero edits or file changes allowed.
+2. **Zero-Crash Offline Fallback**: If no AI agent CLI is found on `$PATH`, `agy-sandbox` falls back to its built-in offline manifest scanner to build the spec deterministically.
+3. **Lean Runtime Infiltration**: Only language runtimes actually used by your project are included under `build_args`. A pure Python app gets `PYTHON_VERSION`; a Node app gets `NODE_VERSION`. Unused runtimes are completely omitted.
+4. **Explicit Flag Precedence**: Any CLI flags you pass (`--agent`, `--sbx`, `--clone`, `--dockerfile`, `--with-kit`) strictly override inferred spec fields.
+5. **Host-Side Spec Writer**: The AI agent returns a clean JSON spec to stdout, and the host `agy-sandbox` tool writes `agy.yaml` (and optional `Dockerfile.agy`).
+
+### 🛠️ CLI Command Reference
+
 - `agy-sandbox init`  
-  Generates a default `agy.yaml` configuration file in your project workspace.  
+  Generates a manual template `agy.yaml` in your project workspace.  
   Options:
+  - `--agent <agent>`: Primary agent harness (`agy`, `claude`, `opencode`, `codex`, `omp`, `prime-agent`, `shell`). Default: `agy`.
+  - `--prime`: Initialize using Prime Agent (`prime-agent`) harness with stacked Node 22 base layer (`agy-base-prime:latest`).
+  - `--omp`: Initialize using Oh My Pi (`omp`) harness.
+  - `--with-agent <agent>`: Seed an additional agent harness kit (can be repeated).
   - `--sbx`: Enable Docker Sandboxes (`sbx`) mode.
-  - `--omp`: Configure the OMP (Oh My Pi) harness.
-  - `--clone`: Enable isolated git clone mode inside the sandbox.
+  - `--clone`: Enable isolated git clone mode inside the microVM.
   - `--dockerfile`: Scaffold a local, customizable `Dockerfile.agy`.
-  - `--with-kit <kit>`: Seed a bundled kit (e.g. `chrome-devtools`, `mojo-stdlib`).
+  - `--with-kit <kit>`: Seed a bundled mixin kit (e.g. `chrome-devtools`, `mojo-stdlib`).
 
 - `agy-sandbox auto-init`  
-  Scans project files (such as `Cargo.toml`, `pyproject.toml`, `package.json`, `pixi.toml`, `*.mojo`) and generates a tailored `agy.yaml`. Accepts `--sbx`, `--omp`, `--clone`, `--agent <agent>`, and `--with-kit <kit>`.
+  Smart spec builder. Inspects project manifests in read-only mode and outputs a lean `agy.yaml`.
 
 - `agy-sandbox up`  
-  Launches the sandbox container and opens an interactive terminal session.  
-  Use `--rebuild` to force rebuild custom images or sandboxes.
+  Launches or resumes the sandbox microVM and attaches to the agent session.  
+  Use `--rebuild` to force rebuild custom images or template stores.
 
 - `agy-sandbox down`  
-  Stops and removes the running sandbox container for the current project.
+  Stops and removes the sandbox container for the current project. Scans for unsaved git changes or active TUI logins before destroying.
+
+- `agy-sandbox agents list`  
+  Lists all supported agent harnesses and their kit references.
+
+- `agy-sandbox agents add <name>`  
+  Configures an agent harness (`claude`, `opencode`, `codex`, `omp`, `shell`) in `agy.yaml`.
+
+- `agy-sandbox kits list`  
+  Lists available bundled mixin kits (`chrome-devtools`, `mojo-stdlib`, `omp`).
+
+- `agy-sandbox kits add <name>`  
+  Appends a mixin kit to your project's `agy.yaml`.
 
 - `agy-sandbox update-base`  
   Pulls the latest Antigravity engine and CLI from Google and bakes them into `agy-base:latest`.
 
-- `agy-sandbox kits list`  
-  Lists all available bundled mixin kits.
-
-- `agy-sandbox kits add <name>`  
-  Adds a bundled kit (e.g., `chrome-devtools`, `mojo-stdlib`, `omp`) to your project's `agy.yaml`.
-
 ## Configuration (`agy.yaml`)
-
-Your sandbox environment is configured via `agy.yaml` in your project root:
 
 ```yaml
 profile: default
 project_name: my_app
+agent: claude
+auth_mode: sbx_persistent  # 'sbx_persistent' or 'sbx_proxy'
 build_args:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "20"
@@ -72,46 +111,57 @@ env:
   - ENVIRONMENT=development
 use_native_login: false
 sbx:
-  enabled: false
-  agent: agy
-  clone: false
-  kits: []
+  enabled: true
+  agent: claude
+  clone: true
+  kits:
+    - claude
+    - opencode
+    - chrome-devtools
 ```
 
-### Language Runtimes (`build_args`)
-- **`PYTHON_VERSION`**: Python version installed via `uv`.
-- **`NODE_VERSION`**: Node.js version installed via NodeSource.
-- **`RUST_VERSION`**: Rust toolchain (`cargo`, `rustc`, `rustup`) version.
-- **`MOJO_VERSION`**: Modular Mojo & MAX platform version installed via `pixi` and Modular Conda channels. Set to `"none"` to skip.
+### Supported Agent Harnesses
 
-## Bundled Kits
+| Identifier | Display Name | Entrypoint | SBX Secret Services | Session Guard Target |
+| :--- | :--- | :--- | :--- | :--- |
+| `agy` | Google Antigravity | `gemini` | `google` | `/root/.gemini` |
+| `claude` | Anthropic Claude Code | `claude` | `anthropic` | `/home/agent/.claude.json` |
+| `opencode` | OpenCode CLI | `opencode` | `openrouter`, `anthropic`, `openai`, `google` | `/home/agent/.config/opencode/auth.json` |
+| `codex` | OpenAI Codex CLI | `codex` | `openai` | `/home/agent/.codex/auth.json` |
+| `omp` | Oh My Pi Harness | `shell` | *(none)* | `/home/agent/.omp` |
+| `prime-agent` | Prime Agent (RLM / Pi) | `prime-agent` | `prime`, `anthropic`, `openai`, `google` | `/home/agent/.prime` |
+| `shell` | Interactive Shell | `shell` | *(none)* | *(cloned git changes)* |
 
-- **`chrome-devtools`**: Spawns headless Chromium with the `chrome-devtools-mcp` server for browser automation and debugging.
-- **`omp`**: Terminal AI coding agent and tool harness (Oh My Pi).
-- **`mojo-stdlib`**: Installs Bazelisk/Bazel launcher and LLVM `lit` test runner for compiling and testing the `modularml/mojo` standard library.
+## Bundled Mixin Kits
 
-## 🔐 Multiple Isolated Logins
+- **`chrome-devtools`**: Spawns headless Chromium with `chrome-devtools-mcp` server for browser automation and CDP debugging.
+- **`omp`**: Terminal AI coding agent and tool harness (Oh My Pi). Pre-baked into stacked `agy-base-omp:latest`.
+- **`prime-agent`**: Self-improving RLM coding and research agent harness by Prime Intellect. Pre-baked into stacked `agy-base-prime:latest` with Node.js 22.
+- **`mojo-stdlib`**: Installs Bazelisk/Bazel launcher and LLVM `lit` test runner for compiling and testing `modularml/mojo`.
 
-`agy-sandbox` manages isolated Antigravity logins across projects without frequent logging in and out:
-- Each project sets its `profile` in `agy.yaml`.
-- The sandbox runs an isolated headless Linux keyring database.
-- Tokens are encrypted and stored under `~/.gemini_<profile>` on your host.
-- Running `agy-sandbox up` authenticates you as the correct user for that project.
-- Set `use_native_login: true` to share your host's active `~/.gemini` folder directly.
+## 🛡️ Code Guardian & Session Safeguards
 
-## Architecture
+`agy-sandbox` guards your active sessions and uncommitted code before sandbox destruction:
+- **Active Auth Sessions**: Scans container microVMs for session files (`.claude.json`, `.config/opencode/auth.json`, `.codex/auth.json`, `.gemini`, `.omp`, `.prime`).
+- **Uncommitted Code**: For cloned sandboxes (`sbx.clone: true`), checks `git status`, unpushed commits (`git cherry`), and local-only branches.
+- **Interactive Guard Prompt**: Triggers a confirmation prompt (`[y/N]`) before `up --rebuild` or `down` deletes active sessions or uncommitted work.
 
-1. **`Dockerfile.base`**: Static base image caching the Antigravity engine, C build tools (`build-essential`, `pkg-config`, `libssl-dev`), terminal definitions, and base setup.
-2. **`Dockerfile.default`**: Dynamic layer installing configured language runtimes (Python, Node.js, Rust, Pixi/Mojo).
-3. **`Dockerfile.omp`**: Multi-arch base layer supporting OMP harness binaries (`arm64` and `x64`).
-4. **Runner Architecture**: Modular `DockerRunner` and `SbxRunner` engines handling standard Docker containers and Docker Sandboxes (`sbx`).
+## 🔐 Profile-Isolated Environments
 
-## Contributing
+Logins and state are isolated per profile and project:
+- Sandbox microVMs use profile-aware naming: `agy-sandbox-<project>` (default) or `agy-sandbox-<project>--<profile>`.
+- Token stores are isolated on the host under `~/.<agent>_<profile>`.
+- Set `auth_mode: sbx_proxy` to route API requests through SBX secret proxies (`sbx secret set <sandbox> <service>`).
 
-1. Clone this repository.
-2. Make changes under `src/`.
-3. Run `uv tool install -e .` to apply local edits.
-4. Run unit tests with `python -m unittest discover tests` and linter with `uv run ruff check .`.
+## 🔄 Changes & Migration (v1 -> v2)
+
+| Feature | Legacy v1 | Current v2 |
+| :--- | :--- | :--- |
+| **Agent Support** | Google Antigravity only | 7 agent harnesses (`agy`, `claude`, `opencode`, `codex`, `omp`, `prime-agent`, `shell`) |
+| **MicroVM Naming** | `agy-sandbox-<project>` (collided across profiles) | `agy-sandbox-<project>--<profile>` (isolated per profile) |
+| **Host Profile Paths** | Hardcoded `~/.gemini_<profile>` | Dynamic per-agent (`~/.claude_<profile>`, `~/.opencode_<profile>`, etc.) |
+| **Kit Resolution** | Abstract kit strings prioritized | Local bundled kit directories in `kits/` resolved directly to disk paths |
+| **Data Protection** | Basic git status check | Active TUI login session files + full Git status checks |
 
 ## License
 

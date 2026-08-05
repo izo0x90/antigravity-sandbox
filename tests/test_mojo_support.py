@@ -25,9 +25,10 @@ class TestMojoSupport(unittest.TestCase):
 
         resolved_path = resolve_kit("mojo-stdlib")
         self.assertIsNotNone(resolved_path)
-        self.assertTrue(isinstance(resolved_path, Path))
-        self.assertTrue(resolved_path.exists())
-        self.assertTrue((resolved_path / "spec.yaml").exists())
+        self.assertTrue(isinstance(resolved_path, str))
+        path_obj = Path(resolved_path)
+        self.assertTrue(path_obj.exists())
+        self.assertTrue((path_obj / "spec.yaml").exists())
 
     def test_auto_init_prompt_mentions_mojo(self):
         prompt = build_auto_init_prompt(sbx_enabled=True, agent="agy", clone_enabled=True)

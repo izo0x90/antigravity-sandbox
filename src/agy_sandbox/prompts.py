@@ -1,5 +1,5 @@
 from typing import List, Optional
-from .constants import AGENT_AGY, DEFAULT_SBX_KIT_URL
+from .constants import AGENT_SPECS
 
 
 def build_auto_init_prompt(
@@ -9,38 +9,55 @@ def build_auto_init_prompt(
     kits: Optional[List[str]] = None,
 ) -> str:
     """
-    Constructs an explicit prompt for the Antigravity agent to analyze a project
-    and output an optimal agy.yaml configuration file.
+    Constructs an explicit read-only prompt for an AI harness to analyze a project workspace
+    and output a raw, structured BoxSpec JSON payload.
     """
-    sbx_instructions = []
+    default_kits = []
     if sbx_enabled:
-        sbx_instructions.append("Enable Docker Sandboxes under `sbx` in agy.yaml (`enabled: true`).")
-        sbx_instructions.append(f'Set `sbx.agent: "{agent}"`.')
-        sbx_instructions.append(f"Set `sbx.clone: {'true' if clone_enabled else 'false'}`.")
-
-        default_kits = []
-        if agent == AGENT_AGY:
-            default_kits.append(DEFAULT_SBX_KIT_URL)
-        default_kits.append(".")
+        if agent in AGENT_SPECS:
+            kit_ref = AGENT_SPECS[agent].kit_ref
+            if kit_ref and kit_ref not in default_kits:
+                default_kits.append(kit_ref)
+        if "." not in default_kits:
+            default_kits.append(".")
         if kits:
             for k in kits:
                 if k not in default_kits:
                     default_kits.append(k)
 
-        sbx_instructions.append(f"Configure `sbx.kits` with these exact entries: {default_kits}.")
-    else:
-        sbx_instructions.append("Set `sbx.enabled: false`.")
-
-    sbx_prompt_text = " ".join(sbx_instructions)
-
     return (
-        "Please analyze this project repository and automatically generate an optimal `agy.yaml` "
-        "file for the agy-sandbox tool. The file should configure the appropriate python version (PYTHON_VERSION), "
-        "node version (NODE_VERSION), rust version (RUST_VERSION), and mojo version (MOJO_VERSION) under `build_args` "
-        "if relevant codebase files (e.g., Cargo.toml, pyproject.toml, package.json, pixi.toml, mojoproject.toml, *.mojo, etc.) "
-        "are present. Also configure appropriate setup_scripts. "
-        "Use 'default' for profile and determine the project_name from the folder name. "
-        f"SANDBOX CONFIGURATION: {sbx_prompt_text} "
-        "IMPORTANT: The sandbox environment already has `uv` globally installed. Do not add `pip install uv` "
-        "or similar to setup_scripts. Just use `uv` directly if needed."
+        "READ-ONLY ANALYSIS INSTRUCTION:\n"
+        "Please inspect the current project repository (e.g., pyproject.toml, package.json, Cargo.toml, "
+        "mojoproject.toml, pixi.toml, requirements.txt, etc.) in READ-ONLY mode. Do NOT edit, write, or modify any files.\n\n"
+        "CRITICAL RULE FOR RUNTIMES (build_args):\n"
+        "Include ONLY the runtime keys in `build_args` for languages that are explicitly present in this repository.\n"
+        "- If Python files/manifests exist -> include 'PYTHON_VERSION' (e.g. '3.11')\n"
+        "- If Node.js files/manifests exist -> include 'NODE_VERSION' (e.g. '20')\n"
+        "- If Rust files/manifests exist -> include 'RUST_VERSION' (e.g. 'stable')\n"
+        "- If Mojo/Pixi files/manifests exist -> include 'MOJO_VERSION' (e.g. 'latest')\n"
+        "OMIT any keys for languages/runtimes that are NOT used in this repository. Do NOT include unused runtimes!\n\n"
+        "Generate an optimal sandbox specification payload as a RAW JSON OBJECT. Do NOT include markdown formatting, "
+        "preambles, or conversational text.\n\n"
+        "EXPECTED JSON SCHEMA:\n"
+        "{\n"
+        '  "project_name": "<slugified-project-name>",\n'
+        '  "profile": "default",\n'
+        '  "build_args": {\n'
+        '    "<ONLY_PRESENT_RUNTIMES>": "<version_string>"\n'
+        "  },\n"
+        '  "setup_scripts": ["<inferred setup commands for present languages only, e.g., uv sync>"],\n'
+        '  "env": ["ENVIRONMENT=development"],\n'
+        '  "sbx": {\n'
+        f'    "enabled": {"true" if sbx_enabled else "false"},\n'
+        f'    "agent": "{agent}",\n'
+        f'    "clone": {"true" if clone_enabled else "false"},\n'
+        f'    "kits": {default_kits}\n'
+        "  },\n"
+        '  "recommendations": {\n'
+        '    "dockerfile_needed": false,\n'
+        '    "reason": "<explanation if custom Dockerfile.agy is recommended>"\n'
+        "  }\n"
+        "}\n\n"
+        "CRITICAL: The sandbox environment already has `uv` globally installed. Do NOT add `pip install uv`. "
+        "Output ONLY the valid JSON object."
     )

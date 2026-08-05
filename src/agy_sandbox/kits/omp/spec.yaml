@@ -9,6 +9,8 @@ caps:
     allow:
       - "*:443"
       - "*:80"
+      - "*:22"
+      - "*:53"
 
 commands:
   startup:

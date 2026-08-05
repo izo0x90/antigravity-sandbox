@@ -1,8 +1,9 @@
 import os
-import yaml
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+import yaml
 
+from .constants import AGENT_SPECS, REMOTE_KIT_SCHEMES
 
 KITS_DIR = Path(__file__).resolve().parent / "kits"
 
@@ -49,38 +50,59 @@ def list_bundled_kits() -> List[Dict[str, str]]:
     return sorted(kits, key=lambda x: x["name"])
 
 
-def resolve_kit(name: str) -> Optional[Path]:
+def resolve_kit(name: str) -> Optional[str]:
     """
-    Resolves a short kit name to its bundled directory if it exists as a valid kit.
-    Returns the absolute Path of the kit directory, or None.
+    Resolves a kit identifier to a canonical string (bundled directory path, agent kit_ref, or None).
+    Prioritizes bundled kit directories on disk over abstract kit reference strings.
     """
     if not name:
         return None
 
+    # 1. Check bundled kits directory first
     kit_dir = KITS_DIR / name
     if kit_dir.exists() and kit_dir.is_dir():
         if (kit_dir / "spec.yaml").exists() or (kit_dir / "spec.yml").exists():
-            return kit_dir.resolve()
+            return str(kit_dir.resolve())
+
+    # 2. Check AGENT_SPECS for registered agent kit references
+    if name in AGENT_SPECS:
+        ref = AGENT_SPECS[name].kit_ref
+        spec_kit_dir = KITS_DIR / ref
+        if spec_kit_dir.exists() and spec_kit_dir.is_dir():
+            return str(spec_kit_dir.resolve())
+        return ref
 
     return None
 
 
 def validate_and_resolve_kits(kits: List[str]) -> List[str]:
     """
-    Resolves kit entries (bundled name, local directory, or git URL) and validates local specs.
-    Returns a list of valid kit paths for sbx execution.
+    Resolves kit entries (agent spec kit_ref, bundled name, local directory, or git/remote URL).
+    Raises ValueError if a kit entry cannot be resolved.
     """
+    valid_agent_refs = {spec.kit_ref for spec in AGENT_SPECS.values()}
     resolved_kits = []
-    for kit in kits:
-        resolved = resolve_kit(kit)
-        kit_path = str(resolved) if resolved else kit
 
-        if os.path.isdir(kit_path):
+    for kit in kits:
+        if not kit or kit == ".":
+            continue
+
+        resolved = resolve_kit(kit)
+        kit_path = resolved if resolved else kit
+
+        if kit in AGENT_SPECS or kit_path in valid_agent_refs or kit_path.startswith(REMOTE_KIT_SCHEMES):
+            resolved_kits.append(kit_path)
+        elif os.path.isdir(kit_path):
             spec_yaml = os.path.join(kit_path, "spec.yaml")
             spec_yml = os.path.join(kit_path, "spec.yml")
             if not (os.path.exists(spec_yaml) or os.path.exists(spec_yml)):
-                print(f"-> Note: Local kit '{kit_path}' specified in agy.yaml but no 'spec.yaml' or 'spec.yml' found. Skipping local kit.")
-                continue
+                raise ValueError(
+                    f"Local kit directory '{kit_path}' specified in agy.yaml is missing required 'spec.yaml' or 'spec.yml'."
+                )
+            resolved_kits.append(kit_path)
+        else:
+            raise ValueError(
+                f"Kit '{kit}' specified in agy.yaml could not be resolved as a registered agent kit, bundled kit, local directory, or remote URL."
+            )
 
-        resolved_kits.append(kit_path)
     return resolved_kits

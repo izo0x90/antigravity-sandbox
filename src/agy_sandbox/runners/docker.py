@@ -16,6 +16,8 @@ from ..constants import (
     LOCAL_DOCKERFILE_NAME,
     OMP_BASE_IMAGE,
     OMP_DOCKERFILE_NAME,
+    PRIME_BASE_IMAGE,
+    PRIME_DOCKERFILE_NAME,
     SUPPORTED_TERMINALS,
 )
 
@@ -77,12 +79,35 @@ class DockerRunner:
         subprocess.run(cmd, check=True)
 
     @classmethod
+    def build_prime_base_image(cls) -> None:
+        try:
+            subprocess.run(["docker", "inspect", DEFAULT_BASE_IMAGE], capture_output=True, check=True)
+        except subprocess.SubprocessError:
+            cls.build_base_image()
+
+        dockerfile_path, context_dir = cls.resolve_docker_context(PRIME_DOCKERFILE_NAME)
+
+        print(f"Building stacked base image {PRIME_BASE_IMAGE}...")
+        cmd = [
+            "docker",
+            "build",
+            "-t",
+            PRIME_BASE_IMAGE,
+            "-f",
+            str(dockerfile_path),
+            str(context_dir),
+        ]
+        subprocess.run(cmd, check=True)
+
+    @classmethod
     def build_project_image(cls, config: AgyConfig) -> str:
         image_name = config.image_name
         local_dockerfile = Path(LOCAL_DOCKERFILE_NAME)
 
         if config.is_omp_requested:
             cls.build_omp_base_image()
+        elif config.is_prime_requested:
+            cls.build_prime_base_image()
 
         if local_dockerfile.exists():
             dockerfile_path = local_dockerfile
@@ -103,6 +128,8 @@ class DockerRunner:
 
         if config.is_omp_requested and "BASE_IMAGE" not in config.build_args:
             build_cmd.extend(["--build-arg", f"BASE_IMAGE={OMP_BASE_IMAGE}"])
+        elif config.is_prime_requested and "BASE_IMAGE" not in config.build_args:
+            build_cmd.extend(["--build-arg", f"BASE_IMAGE={PRIME_BASE_IMAGE}"])
 
         for key, val in config.build_args.items():
             build_cmd.extend(["--build-arg", f"{key}={val}"])
@@ -118,10 +145,11 @@ class DockerRunner:
         host_cwd = os.getcwd()
         workspace_path = config.workspace_path or host_cwd
 
+        profile_prefix = config.agent_spec.profile_dir_name
         if config.use_native_login:
-            profile_dir = os.path.expanduser("~/.gemini")
+            profile_dir = os.path.expanduser(f"~/{profile_prefix}")
         else:
-            profile_dir = os.path.expanduser(f"~/.gemini_{config.profile}")
+            profile_dir = os.path.expanduser(f"~/{profile_prefix}_{config.profile}")
 
         os.makedirs(profile_dir, exist_ok=True)
 

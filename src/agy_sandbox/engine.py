@@ -12,6 +12,10 @@ def build_omp_base_image() -> None:
     DockerRunner.build_omp_base_image()
 
 
+def build_prime_base_image() -> None:
+    DockerRunner.build_prime_base_image()
+
+
 def build_project_image(config: AgyConfig) -> str:
     return DockerRunner.build_project_image(config)
 
@@ -50,6 +54,7 @@ def run_down(config: AgyConfig) -> None:
 __all__ = [
     "build_base_image",
     "build_omp_base_image",
+    "build_prime_base_image",
     "build_project_image",
     "check_for_unsaved_sandbox_work",
     "remove_sandbox",

@@ -1,4 +1,7 @@
 import re
+import shutil
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
 
 # File & Directory Names
 DEFAULT_CONFIG_FILE = "agy.yaml"
@@ -6,24 +9,50 @@ LOCAL_DOCKERFILE_NAME = "Dockerfile.agy"
 DEFAULT_DOCKERFILE_NAME = "Dockerfile.default"
 BASE_DOCKERFILE_NAME = "Dockerfile.base"
 OMP_DOCKERFILE_NAME = "Dockerfile.omp"
+PRIME_DOCKERFILE_NAME = "Dockerfile.prime"
 
 # Image Tags
 DEFAULT_BASE_IMAGE = "agy-base:latest"
 OMP_BASE_IMAGE = "agy-base-omp:latest"
+PRIME_BASE_IMAGE = "agy-base-prime:latest"
 
 # Agent Targets
 AGENT_AGY = "agy"
+AGENT_CLAUDE = "claude"
+AGENT_OPENCODE = "opencode"
+AGENT_CODEX = "codex"
 AGENT_SHELL = "shell"
 AGENT_OMP = "omp"
+AGENT_PRIME_AGENT = "prime-agent"
 
 # Kit Names & Remote URLs
 KIT_OMP = "omp"
+KIT_PRIME_AGENT = "prime-agent"
 DEFAULT_SBX_KIT_URL = "git+https://github.com/shelajev/agy-sbx-kit.git"
+REMOTE_KIT_SCHEMES = ("git+", "git@", "https://", "http://", "oci://")
 
 # Container Paths & Mount Points
 CONTAINER_GEMINI_HOME = "/root/.gemini"
 CONTAINER_GEMINI_CONFIG = "/root/.config/gemini"
 CONTAINER_KEYRINGS = "/root/.local/share/keyrings"
+
+# Execution Timeouts & Limits
+DEFAULT_CMD_TIMEOUT = 10
+REMOVE_CMD_TIMEOUT = 15
+DAEMON_PREFLIGHT_TIMEOUT = 5
+SHORT_IMAGE_ID_LEN = 12
+BANNER_WIDTH = 78
+EXIT_CODE_INTERRUPTED = 130
+
+# Default Config Specifications
+DEFAULT_BUILD_ARGS = {
+    "PYTHON_VERSION": "3.11",
+    "NODE_VERSION": "20",
+    "RUST_VERSION": "stable",
+    "MOJO_VERSION": "latest",
+}
+DEFAULT_SETUP_SCRIPTS = ["npm install", "pip install -r requirements.txt"]
+DEFAULT_ENV_VARS = ["ENVIRONMENT=development"]
 
 # Terminal Support Defaults
 DEFAULT_TERM = "xterm-256color"
@@ -41,6 +70,135 @@ SUPPORTED_TERMINALS = {
     "ghostty",
     "wezterm",
 }
+
+
+@dataclass(frozen=True)
+class AgentSpec:
+    identifier: str
+    display_name: str
+    sbx_agent_arg: str
+    kit_ref: str
+    cli_binary: str = ""
+    sbx_secret_services: Tuple[str, ...] = ()
+    signature_files: Tuple[str, ...] = ()
+    auth_session_files: Tuple[str, ...] = ()
+    profile_dir_name: str = ".gemini"
+
+    def get_read_only_cmd(self, prompt: str, cwd: str) -> List[str]:
+        if not self.cli_binary:
+            return []
+        if self.identifier == "agy":
+            return [self.cli_binary, "--add-dir", cwd, "--mode", "plan", "--print", prompt]
+        if self.identifier == "claude":
+            return [self.cli_binary, "-p", prompt]
+        if self.identifier == "opencode":
+            return [self.cli_binary, "run", "--agent", "plan", prompt]
+        if self.identifier == "codex":
+            return [self.cli_binary, "exec", prompt]
+        if self.identifier == "omp":
+            return [self.cli_binary, "-p", prompt, "--tools=read,grep,glob"]
+        if self.identifier == "prime-agent":
+            return [self.cli_binary, "-p", "--no-session", "--no-tools", prompt]
+        return [self.cli_binary, "-p", prompt]
+
+
+AGENT_SPECS: Dict[str, AgentSpec] = {
+    "agy": AgentSpec(
+        identifier="agy",
+        display_name="Google Antigravity",
+        sbx_agent_arg="gemini",
+        kit_ref=DEFAULT_SBX_KIT_URL,
+        cli_binary="agy",
+        sbx_secret_services=("google",),
+        signature_files=("antigravity.yaml",),
+        auth_session_files=(".gemini",),
+        profile_dir_name=".gemini",
+    ),
+    "claude": AgentSpec(
+        identifier="claude",
+        display_name="Anthropic Claude Code",
+        sbx_agent_arg="claude",
+        kit_ref="claude",
+        cli_binary="claude",
+        sbx_secret_services=("anthropic",),
+        signature_files=("CLAUDE.md", ".claude"),
+        auth_session_files=(".claude.json", ".claude"),
+        profile_dir_name=".claude",
+    ),
+    "opencode": AgentSpec(
+        identifier="opencode",
+        display_name="OpenCode CLI",
+        sbx_agent_arg="opencode",
+        kit_ref="opencode",
+        cli_binary="opencode",
+        sbx_secret_services=("openrouter", "anthropic", "openai", "google"),
+        signature_files=("opencode.json", ".opencode"),
+        auth_session_files=(".config/opencode/auth.json", ".opencode"),
+        profile_dir_name=".opencode",
+    ),
+    "codex": AgentSpec(
+        identifier="codex",
+        display_name="OpenAI Codex CLI",
+        sbx_agent_arg="codex",
+        kit_ref="codex",
+        cli_binary="codex",
+        sbx_secret_services=("openai",),
+        signature_files=(".codex",),
+        auth_session_files=(".codex/auth.json", ".codex"),
+        profile_dir_name=".codex",
+    ),
+    "omp": AgentSpec(
+        identifier="omp",
+        display_name="Oh My Pi Harness",
+        sbx_agent_arg="shell",
+        kit_ref="omp",
+        cli_binary="omp",
+        signature_files=(),
+        auth_session_files=(".omp",),
+        profile_dir_name=".omp",
+    ),
+    "prime-agent": AgentSpec(
+        identifier="prime-agent",
+        display_name="Prime Agent (RLM)",
+        sbx_agent_arg="shell",
+        kit_ref="prime-agent",
+        cli_binary="prime-agent",
+        sbx_secret_services=("prime", "anthropic", "openai", "google"),
+        signature_files=("AGENTS.md", ".prime"),
+        auth_session_files=(".prime",),
+        profile_dir_name=".prime",
+    ),
+    "shell": AgentSpec(
+        identifier="shell",
+        display_name="Interactive Shell",
+        sbx_agent_arg="shell",
+        kit_ref="",
+        cli_binary="",
+        signature_files=(),
+        auth_session_files=(),
+        profile_dir_name=".shell",
+    ),
+}
+
+
+def discover_available_agent(preferred_agent: Optional[str] = None) -> Optional[AgentSpec]:
+    """
+    Scans PATH for available agent binaries. If preferred_agent is provided and installed, returns it.
+    Otherwise checks agents in priority order ('agy', 'claude', 'opencode', 'codex', 'omp').
+    Returns None if no agent binary is found on PATH.
+    """
+    if preferred_agent and preferred_agent in AGENT_SPECS:
+        spec = AGENT_SPECS[preferred_agent]
+        if spec.cli_binary and shutil.which(spec.cli_binary):
+            return spec
+
+    priority = ("agy", "claude", "opencode", "codex", "omp", "prime-agent")
+    for agent_id in priority:
+        spec = AGENT_SPECS[agent_id]
+        if spec.cli_binary and shutil.which(spec.cli_binary):
+            return spec
+
+    return None
 
 
 def slugify_project_name(name: str) -> str:

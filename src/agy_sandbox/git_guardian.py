@@ -7,23 +7,57 @@ if TYPE_CHECKING:
 
 def check_for_unsaved_sandbox_work(sandbox_name: str, config: "AgyConfig") -> bool:
     """
-    Checks if there is ANY unsaved work in a cloned sandbox:
+    Checks if there is ANY unsaved work or active authentication sessions in a sandbox:
     1. Uncommitted/dirty changes (`git status --porcelain`)
     2. Unpushed local commits (`git cherry -v`)
     3. Untracked local branches (`git log --branches --not --remotes --oneline`)
+    4. Active TUI session auth files (.claude.json, .config/opencode/auth.json, etc.)
 
-    Returns True if unsaved work is found, False otherwise.
+    Returns True if unsaved work or active session files are found, False otherwise.
     """
-    if not config.sbx.clone:
-        return False  # Bind-mount directly modifies host filesystem.
-
     # Import locally to avoid circular dependency
+    from .constants import AGENT_SPECS, BANNER_WIDTH, DEFAULT_CMD_TIMEOUT
     from .runners.sbx import sandbox_exists
 
     if not sandbox_exists(sandbox_name):
         return False
 
-    print("🔍 Code Guardian: Scanning cloned sandbox for unsaved work...")
+    has_unsaved = False
+    print("🔍 Code Guardian: Scanning sandbox for unsaved work and active sessions...")
+
+    # Dynamically resolve active auth session file paths from AGENT_SPECS registry
+    auth_paths = []
+    for spec in AGENT_SPECS.values():
+        for rel_path in spec.auth_session_files:
+            clean_rel = rel_path.lstrip("/")
+            for base in ["/home/agent", "/root"]:
+                auth_paths.append(f"{base}/{clean_rel}")
+    active_auth_files = []
+    for auth_path in auth_paths:
+        try:
+            res = subprocess.run(
+                ["sbx", "exec", sandbox_name, "test", "-e", auth_path],
+                capture_output=True,
+                timeout=DEFAULT_CMD_TIMEOUT,
+                stdin=subprocess.DEVNULL,
+            )
+            if res.returncode == 0:
+                active_auth_files.append(auth_path)
+        except (subprocess.SubprocessError, TimeoutError, OSError):
+            pass
+
+    if active_auth_files:
+        has_unsaved = True
+        print("\n" + "!" * BANNER_WIDTH)
+        print("⚠️  CRITICAL: ACTIVE TUI LOGIN SESSION FILES DETECTED INSIDE SANDBOX!")
+        print("Rebuilding or destroying this sandbox now will PERMANENTLY delete these sessions:")
+        for auth_file in active_auth_files:
+            print(f"  * {auth_file}")
+        print("!" * BANNER_WIDTH)
+
+    if not config.sbx.clone:
+        return has_unsaved  # Bind-mount directly modifies host code, but auth check remains relevant
+
     try:
         # Check 1: Uncommitted files
         dirty_check = subprocess.run(
@@ -31,6 +65,8 @@ def check_for_unsaved_sandbox_work(sandbox_name: str, config: "AgyConfig") -> bo
             capture_output=True,
             text=True,
             check=True,
+            timeout=DEFAULT_CMD_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         has_dirty_files = bool(dirty_check.stdout.strip())
 
@@ -40,6 +76,8 @@ def check_for_unsaved_sandbox_work(sandbox_name: str, config: "AgyConfig") -> bo
             capture_output=True,
             text=True,
             check=True,
+            timeout=DEFAULT_CMD_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         has_unpushed_commits = bool(commit_check.stdout.strip())
 
@@ -59,15 +97,16 @@ def check_for_unsaved_sandbox_work(sandbox_name: str, config: "AgyConfig") -> bo
             capture_output=True,
             text=True,
             check=True,
+            timeout=DEFAULT_CMD_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         has_sandbox_only_branches = bool(branch_check.stdout.strip())
 
-        if has_dirty_files or has_unpushed_commits or has_sandbox_only_branches:
-            print("\n" + "!" * 78)
-            print("⚠️  CRITICAL: YOU HAVE UNSAVED OR UNPUSHED WORK DETECTED INSIDE THE CLONED SANDBOX!")
-            print("Because you are in CLONE mode, these changes DO NOT exist on your host machine.")
+        if has_dirty_files or has_unpushed_commits or has_sandbox_only_branches or has_unsaved:
+            print("\n" + "!" * BANNER_WIDTH)
+            print("⚠️  CRITICAL: UNSAVED WORK OR ACTIVE SESSIONS DETECTED INSIDE SANDBOX!")
             print("Destroying this sandbox now will PERMANENTLY delete them.")
-            print("!" * 78)
+            print("!" * BANNER_WIDTH)
 
             if has_dirty_files:
                 print("\n📂 Uncommitted / Dirty Files inside Sandbox:")
@@ -81,8 +120,7 @@ def check_for_unsaved_sandbox_work(sandbox_name: str, config: "AgyConfig") -> bo
                 print("\n🌿 Sandbox-only Branches (not synced with origin):")
                 print(branch_check.stdout.strip())
 
-            print("-" * 78)
-            print("💡 To save your work, run 'git push origin' inside the sandbox container first!\n")
+            print("-" * BANNER_WIDTH)
             return True
 
     except Exception as e:
@@ -90,4 +128,4 @@ def check_for_unsaved_sandbox_work(sandbox_name: str, config: "AgyConfig") -> bo
         print("To be safe, we must assume there could be unsaved changes.")
         return True
 
-    return False
+    return has_unsaved

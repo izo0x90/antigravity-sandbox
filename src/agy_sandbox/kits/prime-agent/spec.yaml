@@ -1,0 +1,22 @@
+schemaVersion: "1"
+kind: mixin
+name: prime-agent
+displayName: Prime Agent Harness Kit
+description: Self-improving RLM coding agent and tool harness by Prime Intellect
+
+caps:
+  network:
+    allow:
+      - "*:443"
+      - "*:80"
+      - "*:22"
+      - "*:53"
+
+commands:
+  startup:
+    - command:
+        - "bash"
+        - "-c"
+        - "mkdir -p /home/agent/.prime"
+      user: "1000"
+      description: "Initialize Prime Agent working directory"

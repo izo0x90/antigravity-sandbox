@@ -1,18 +1,22 @@
-import os
-import yaml
 from dataclasses import dataclass, field
-from typing import List, Optional
-
-
+import os
+from typing import Dict, List, Optional
+import yaml
 
 from .constants import (
     AGENT_AGY,
     AGENT_OMP,
-    AGENT_SHELL,
+    AGENT_PRIME_AGENT,
+    AGENT_SPECS,
+    AgentSpec,
+    DEFAULT_BUILD_ARGS,
     DEFAULT_CONFIG_FILE,
-    DEFAULT_SBX_KIT_URL,
+    DEFAULT_ENV_VARS,
+    DEFAULT_SETUP_SCRIPTS,
     KIT_OMP,
+    KIT_PRIME_AGENT,
 )
+from .naming import SandboxNamingResolver
 
 
 @dataclass
@@ -27,8 +31,10 @@ class SbxConfig:
 class AgyConfig:
     profile: str = "default"
     project_name: str = "default_project"
+    agent: str = AGENT_AGY
+    auth_mode: str = "sbx_persistent"
     workspace_path: Optional[str] = None
-    build_args: dict = field(default_factory=dict)
+    build_args: Dict[str, str] = field(default_factory=dict)
     setup_scripts: List[str] = field(default_factory=list)
     env: List[str] = field(default_factory=list)
     use_native_login: bool = False
@@ -36,26 +42,40 @@ class AgyConfig:
 
     @property
     def sandbox_name(self) -> str:
-        return f"agy-sandbox-{self.project_name}".replace("_", "-")
+        return SandboxNamingResolver.resolve_sandbox_name(self.project_name, self.profile)
+
+    @property
+    def legacy_sandbox_name(self) -> str:
+        return SandboxNamingResolver.resolve_legacy_sandbox_name(self.project_name)
 
     @property
     def container_name(self) -> str:
-        return f"agy-sandbox-container-{self.project_name}"
+        return SandboxNamingResolver.resolve_container_name(self.project_name, self.profile)
 
     @property
     def image_name(self) -> str:
-        return f"agy-sandbox-{self.project_name}".replace("_", "-")
+        return SandboxNamingResolver.resolve_image_name(self.project_name)
 
     @property
     def is_omp_requested(self) -> bool:
-        return KIT_OMP in self.sbx.kits or self.sbx.agent == AGENT_OMP
+        return KIT_OMP in self.sbx.kits or self.sbx.agent == AGENT_OMP or self.agent == AGENT_OMP
+
+    @property
+    def is_prime_requested(self) -> bool:
+        return KIT_PRIME_AGENT in self.sbx.kits or self.sbx.agent == AGENT_PRIME_AGENT or self.agent == AGENT_PRIME_AGENT
+
+    @property
+    def agent_spec(self) -> AgentSpec:
+        agent_key = self.sbx.agent if (self.sbx.agent in AGENT_SPECS and self.sbx.agent != AGENT_AGY) else self.agent
+        return AGENT_SPECS.get(agent_key, AGENT_SPECS[AGENT_AGY])
 
     @classmethod
     def from_dict(cls, data: dict) -> "AgyConfig":
-        build_args = data.get("build_args", {})
+        data = data or {}
+        build_args = data.get("build_args") or {}
 
         # Backward compatibility for old configs containing "runtime"
-        if "runtime" in data:
+        if "runtime" in data and isinstance(data["runtime"], dict):
             runtime_data = data["runtime"]
             if "python" in runtime_data and "PYTHON_VERSION" not in build_args:
                 build_args["PYTHON_VERSION"] = str(runtime_data["python"])
@@ -64,21 +84,41 @@ class AgyConfig:
             if "apt_packages" in runtime_data and "APT_PACKAGES" not in build_args:
                 build_args["APT_PACKAGES"] = " ".join(runtime_data["apt_packages"])
 
-        sbx_data = data.get("sbx", {})
+        sbx_data = data.get("sbx")
+        if isinstance(sbx_data, dict):
+            sbx_dict = sbx_data
+            sbx_enabled = sbx_dict.get("enabled", False)
+        elif isinstance(sbx_data, bool):
+            sbx_dict = {}
+            sbx_enabled = sbx_data
+        else:
+            sbx_dict = {}
+            sbx_enabled = False
+
+        raw_agent = data.get("agent") or sbx_dict.get("agent") or AGENT_AGY
+        raw_auth_mode = data.get("auth_mode") or sbx_dict.get("auth_mode") or "sbx_persistent"
+
+        if raw_agent != AGENT_AGY:
+            sbx_enabled = True
+
+        sbx_kits = sbx_dict.get("kits") or []
+
         sbx = SbxConfig(
-            enabled=sbx_data.get("enabled", False),
-            agent=sbx_data.get("agent", AGENT_AGY),
-            clone=sbx_data.get("clone", False),
-            kits=sbx_data.get("kits", []),
+            enabled=sbx_enabled,
+            agent=raw_agent,
+            clone=sbx_dict.get("clone", False),
+            kits=sbx_kits,
         )
         return cls(
-            profile=data.get("profile", "default"),
-            project_name=data.get("project_name", "default_project"),
+            profile=data.get("profile") or "default",
+            project_name=data.get("project_name") or "default_project",
+            agent=raw_agent,
+            auth_mode=raw_auth_mode,
             workspace_path=data.get("workspace_path"),
             build_args=build_args,
-            setup_scripts=data.get("setup_scripts", []),
-            env=data.get("env", []),
-            use_native_login=data.get("use_native_login", False),
+            setup_scripts=data.get("setup_scripts") or [],
+            env=data.get("env") or [],
+            use_native_login=data.get("use_native_login") or False,
             sbx=sbx,
         )
 
@@ -97,6 +137,8 @@ def save_config(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> None:
     data = {
         "profile": config.profile,
         "project_name": config.project_name,
+        "agent": config.agent,
+        "auth_mode": config.auth_mode,
         "build_args": config.build_args,
         "setup_scripts": config.setup_scripts,
         "env": config.env,
@@ -120,23 +162,28 @@ def resolve_sbx_params(
     omp: bool = False,
     clone: bool = False,
     agent: Optional[str] = None,
+    additional_agents: Optional[List[str]] = None,
     kits: Optional[List[str]] = None,
 ) -> SbxConfig:
-    sbx_enabled = sbx or omp or bool(kits) or (agent is not None)
+    resolved_agent = agent or (AGENT_OMP if omp else AGENT_AGY)
+    sbx_enabled = sbx or omp or bool(kits) or bool(additional_agents) or (resolved_agent != AGENT_AGY)
     clone_enabled = clone or sbx_enabled
-
-    resolved_agent = agent
-    if not resolved_agent:
-        resolved_agent = AGENT_SHELL if omp else AGENT_AGY
 
     resolved_kits = []
     if sbx_enabled:
-        if resolved_agent == AGENT_AGY:
-            resolved_kits.append(DEFAULT_SBX_KIT_URL)
-        resolved_kits.append(".")
+        if resolved_agent in AGENT_SPECS:
+            kit_ref = AGENT_SPECS[resolved_agent].kit_ref
+            if kit_ref and kit_ref not in resolved_kits:
+                resolved_kits.append(kit_ref)
 
-    if omp and KIT_OMP not in resolved_kits:
-        resolved_kits.append(KIT_OMP)
+    if additional_agents:
+        for add_agent in additional_agents:
+            if add_agent in AGENT_SPECS:
+                kit_ref = AGENT_SPECS[add_agent].kit_ref
+                if kit_ref and kit_ref not in resolved_kits:
+                    resolved_kits.append(kit_ref)
+            elif add_agent not in resolved_kits:
+                resolved_kits.append(add_agent)
 
     if kits:
         for kit in kits:
@@ -157,27 +204,26 @@ def write_default_config(
     clone_enabled: bool = False,
     kits: Optional[List[str]] = None,
     agent: str = AGENT_AGY,
+    additional_agents: Optional[List[str]] = None,
     omp: bool = False,
 ) -> None:
     sbx = resolve_sbx_params(
         sbx=sbx_enabled,
         omp=omp,
         clone=clone_enabled,
-        agent=agent if agent != AGENT_AGY else None,
+        agent=agent,
+        additional_agents=additional_agents,
         kits=kits,
     )
 
     default_config = {
         "profile": "default",
         "project_name": os.path.basename(os.getcwd()),
-        "build_args": {
-            "PYTHON_VERSION": "3.11",
-            "NODE_VERSION": "20",
-            "RUST_VERSION": "stable",
-            "MOJO_VERSION": "latest",
-        },
-        "setup_scripts": ["npm install", "pip install -r requirements.txt"],
-        "env": ["ENVIRONMENT=development"],
+        "agent": sbx.agent,
+        "auth_mode": "sbx_persistent",
+        "build_args": dict(DEFAULT_BUILD_ARGS),
+        "setup_scripts": list(DEFAULT_SETUP_SCRIPTS),
+        "env": list(DEFAULT_ENV_VARS),
         "use_native_login": False,
         "sbx": {
             "enabled": sbx.enabled,
