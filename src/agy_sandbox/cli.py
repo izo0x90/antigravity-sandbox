@@ -32,27 +32,36 @@ from .spec_inspector import (
 )
 
 
+def parse_agent_list(raw_agents: Optional[List[str]]) -> List[str]:
+    """
+    Parses a list of agent strings (e.g. ['opencode,omp', 'prime-agent']) into a clean list of
+    valid agent identifiers, preserving user ordering.
+    """
+    if not raw_agents:
+        return []
+    agents = []
+    for item in raw_agents:
+        if not item:
+            continue
+        parts = [p.strip() for p in item.split(",")]
+        for p in parts:
+            if p and p not in agents:
+                agents.append(p)
+    return agents
+
+
 def init_command(args: argparse.Namespace) -> None:
     print("Running init command...")
-    omp_requested = getattr(args, "omp", False)
-    prime_requested = getattr(args, "prime", False)
-    
-    agent = args.agent or AGENT_AGY
-    if agent == AGENT_AGY:
-        if prime_requested:
-            agent = AGENT_PRIME_AGENT
-        elif omp_requested:
-            agent = AGENT_SHELL
-
-    additional_agents = getattr(args, "with_agent", [])
+    container_agents = parse_agent_list(args.agent)
+    primary_agent = container_agents[0] if container_agents else AGENT_AGY
+    additional_agents = container_agents[1:] if len(container_agents) > 1 else []
 
     write_default_config(
-        sbx_enabled=args.sbx or (agent != AGENT_AGY),
+        sbx_enabled=args.sbx or (primary_agent != AGENT_AGY) or bool(additional_agents) or bool(args.with_kit),
         clone_enabled=args.clone,
         kits=args.with_kit,
-        agent=agent,
+        agent=primary_agent,
         additional_agents=additional_agents,
-        omp=omp_requested,
     )
 
     if args.dockerfile:
@@ -72,37 +81,35 @@ def init_command(args: argparse.Namespace) -> None:
 
 def auto_init_command(args: argparse.Namespace) -> None:
     print("Running auto-init command...")
-    prime_requested = getattr(args, "prime", False)
-    omp_requested = getattr(args, "omp", False)
-    sbx_enabled = args.sbx or omp_requested or prime_requested or bool(args.with_kit) or (args.agent is not None)
+    
+    # 1. Parse target container agents
+    container_agents = parse_agent_list(args.agent)
+    primary_agent = container_agents[0] if container_agents else AGENT_AGY
+    additional_agents = container_agents[1:] if len(container_agents) > 1 else []
+
+    # 2. Determine host codebase analyzer agent
+    analyzer_target = getattr(args, "analyzer", None)
+    if not analyzer_target:
+        analyzer_target = primary_agent if container_agents else None
+
+    discovered_spec = discover_available_agent(analyzer_target)
+
+    sbx_enabled = args.sbx or (primary_agent != AGENT_AGY) or bool(additional_agents) or bool(args.with_kit)
     clone_enabled = args.clone or sbx_enabled
 
-    requested_agent = args.agent
-    if not requested_agent:
-        if prime_requested:
-            requested_agent = AGENT_PRIME_AGENT
-        elif omp_requested:
-            requested_agent = AGENT_OMP
-
-    discovered_spec = discover_available_agent(requested_agent)
-    agent = requested_agent or (discovered_spec.identifier if discovered_spec else AGENT_AGY)
-
+    # 3. Collect user mixin kits (kits from container agents + explicit --with-kit)
     user_kits = list(args.with_kit)
-    additional_agents = getattr(args, "with_agent", [])
-    for add_agent in additional_agents:
+    for add_agent in container_agents:
         if add_agent in AGENT_SPECS:
             kit_ref = AGENT_SPECS[add_agent].kit_ref
             if kit_ref and kit_ref not in user_kits:
                 user_kits.append(kit_ref)
 
-    if getattr(args, "omp", False) and KIT_OMP not in user_kits:
-        user_kits.append(KIT_OMP)
-
     cwd = os.getcwd()
 
     prompt = build_auto_init_prompt(
         sbx_enabled=sbx_enabled,
-        agent=agent,
+        agent=primary_agent,
         clone_enabled=clone_enabled,
         kits=user_kits,
     )
@@ -120,7 +127,7 @@ def auto_init_command(args: argparse.Namespace) -> None:
         spec_dict = generate_offline_box_spec(
             cwd,
             explicit_args={
-                "agent": agent,
+                "agent": primary_agent,
                 "sbx": sbx_enabled,
                 "clone": clone_enabled,
                 "kits": user_kits,
@@ -131,22 +138,24 @@ def auto_init_command(args: argparse.Namespace) -> None:
     if "sbx" not in spec_dict or not isinstance(spec_dict["sbx"], dict):
         spec_dict["sbx"] = {}
     spec_dict["sbx"]["enabled"] = sbx_enabled
-    spec_dict["sbx"]["agent"] = agent
+    spec_dict["sbx"]["agent"] = primary_agent
     spec_dict["sbx"]["clone"] = clone_enabled
-    spec_dict["agent"] = agent
+    spec_dict["agent"] = primary_agent
 
-    # Ensure kits has all required entries
+    # Ensure kits has all required entries (without any '.' injection)
     current_kits = list(spec_dict["sbx"].get("kits") or [])
-    if agent in AGENT_SPECS:
-        target_kit = AGENT_SPECS[agent].kit_ref
-        if target_kit and target_kit not in current_kits:
-            current_kits.append(target_kit)
-    if "." not in current_kits:
-        current_kits.append(".")
     for k in user_kits:
-        if k not in current_kits:
+        if k not in current_kits and k != ".":
             current_kits.append(k)
+
+    # Strip out any accidental '.' entries from agent/offline output
+    current_kits = [k for k in current_kits if k != "."]
+
     spec_dict["sbx"]["kits"] = current_kits
+
+    # Build config and save
+    config = AgyConfig.from_dict(spec_dict)
+    save_config(config, DEFAULT_CONFIG_FILE)
 
     # Build config and save
     config = AgyConfig.from_dict(spec_dict)
@@ -302,24 +311,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     init_parser = subparsers.add_parser("init", help="Generate a template agy.yaml")
     init_parser.add_argument(
         "--agent",
-        choices=list(AGENT_SPECS.keys()),
-        default=AGENT_AGY,
-        help="Specify primary starting agent harness (default: agy)",
-    )
-    init_parser.add_argument(
-        "--with-agent",
         action="append",
-        default=[],
-        help="Include additional agent kit in the generated config (can be repeated)",
+        help="Specify target agent harness(es) (e.g. opencode,omp,prime-agent). First agent is primary.",
     )
     init_parser.add_argument(
         "--sbx", action="store_true", help="Initialize the config with Docker Sandboxes (sbx) enabled"
-    )
-    init_parser.add_argument(
-        "--omp", action="store_true", help="Initialize the config with OMP harness enabled via Docker Sandboxes (sbx)"
-    )
-    init_parser.add_argument(
-        "--prime", action="store_true", help="Initialize the config with Prime Agent harness enabled via Docker Sandboxes (sbx)"
     )
     init_parser.add_argument(
         "--clone", action="store_true", help="Initialize the config with clone mode enabled inside the sandbox"
@@ -328,28 +324,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--dockerfile", action="store_true", help="Scaffold a customizable Dockerfile.agy in the project workspace"
     )
     init_parser.add_argument(
-        "--with-kit", action="append", default=[], help="Seed a bundled kit in the generated config (can be repeated)"
+        "--with-kit", action="append", default=[], help="Seed a bundled or local mixin kit in the generated config (can be repeated)"
     )
     init_parser.set_defaults(func=init_command)
 
     # auto-init
     auto_init_parser = subparsers.add_parser(
-        "auto-init", help="Automatically generate agy.yaml using the Antigravity agent"
+        "auto-init", help="Automatically generate agy.yaml using an AI agent inspector"
     )
     auto_init_parser.add_argument(
-        "--agent", choices=list(AGENT_SPECS.keys()), default=None, help="Specify sandbox agent (e.g. agy, claude, opencode)"
+        "--analyzer", help="Specify host AI agent for read-only codebase analysis (e.g. opencode, claude, agy)"
     )
     auto_init_parser.add_argument(
-        "--with-agent", action="append", default=[], help="Include additional agent kit (can be repeated)"
+        "--agent",
+        action="append",
+        help="Specify target agent harness(es) (e.g. opencode,omp,prime-agent). First agent is primary.",
     )
     auto_init_parser.add_argument(
         "--sbx", action="store_true", help="Configure Docker Sandboxes (sbx) mode in auto-generated agy.yaml"
-    )
-    auto_init_parser.add_argument(
-        "--omp", action="store_true", help="Configure OMP harness in auto-generated agy.yaml"
-    )
-    auto_init_parser.add_argument(
-        "--prime", action="store_true", help="Configure Prime Agent harness in auto-generated agy.yaml"
     )
     auto_init_parser.add_argument(
         "--clone", action="store_true", help="Configure clone mode in auto-generated agy.yaml"

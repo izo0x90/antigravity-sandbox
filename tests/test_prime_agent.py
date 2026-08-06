@@ -50,7 +50,7 @@ class TestPrimeAgentIntegration(unittest.TestCase):
             self.assertEqual(disc.identifier, "prime-agent")
 
     def test_init_command_with_prime_flag(self):
-        exit_code = main(["init", "--prime"])
+        exit_code = main(["init", "--agent", "prime-agent"])
         self.assertEqual(exit_code, 0)
         self.assertTrue(os.path.exists("agy.yaml"))
 
@@ -68,7 +68,7 @@ class TestPrimeAgentIntegration(unittest.TestCase):
                 "build_args": {"PYTHON_VERSION": "3.11"},
                 "sbx": {"enabled": True, "agent": "prime-agent", "clone": True, "kits": ["prime-agent"]},
             }
-            exit_code = main(["auto-init", "--prime"])
+            exit_code = main(["auto-init", "--agent", "prime-agent"])
             self.assertEqual(exit_code, 0)
             self.assertTrue(os.path.exists("agy.yaml"))
 

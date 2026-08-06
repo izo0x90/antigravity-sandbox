@@ -51,8 +51,7 @@ class TestE2EFullSuite(unittest.TestCase):
                 os.remove("agy.yaml")
                 ret = main([
                     "init",
-                    "--agent", "claude",
-                    "--with-agent", "opencode",
+                    "--agent", "claude,opencode",
                     "--sbx",
                     "--clone",
                     "--with-kit", "chrome-devtools",

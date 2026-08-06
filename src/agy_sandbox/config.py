@@ -187,8 +187,10 @@ def resolve_sbx_params(
 
     if kits:
         for kit in kits:
-            if kit not in resolved_kits:
+            if kit and kit != "." and kit not in resolved_kits:
                 resolved_kits.append(kit)
+
+    resolved_kits = [k for k in resolved_kits if k != "."]
 
     return SbxConfig(
         enabled=sbx_enabled,

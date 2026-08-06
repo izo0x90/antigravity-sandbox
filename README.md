@@ -38,19 +38,18 @@ Stop writing config files by hand. `agy-sandbox auto-init` inspects your codebas
 # Auto-detect project runtimes and generate agy.yaml
 agy-sandbox auto-init
 
-# Auto-init with specific agent harness and Docker Sandboxes enabled
-agy-sandbox auto-init --agent claude --sbx
+# Auto-init with specific container agent harnesses (first agent is primary)
+agy-sandbox auto-init --agent opencode,omp,prime-agent
 
-# Auto-init for OMP or Prime Agent with extra mixin kits
-agy-sandbox auto-init --prime --with-kit chrome-devtools
-agy-sandbox auto-init --omp
+# Use Claude on the host for codebase analysis, but install OpenCode & Prime in container
+agy-sandbox auto-init --analyzer claude --agent opencode,prime-agent
 ```
 
 #### How `auto-init` Works:
-1. **Read-Only Codebase Analysis**: Invokes your choice of installed AI agent (`agy`, `claude`, `opencode`, `codex`, `omp`) or auto-discovers what's available on `$PATH`. The agent analyzes manifest files (`pyproject.toml`, `package.json`, `Cargo.toml`, `pixi.toml`, `mojoproject.toml`) in 100% read-only/plan mode—zero edits or file changes allowed.
+1. **Read-Only Codebase Analysis**: Uses `--analyzer <agent>` (or defaults to your first `--agent`) to run a read-only analysis of manifest files (`pyproject.toml`, `package.json`, `Cargo.toml`, `pixi.toml`, `mojoproject.toml`) in plan mode—zero edits or file changes allowed.
 2. **Zero-Crash Offline Fallback**: If no AI agent CLI is found on `$PATH`, `agy-sandbox` falls back to its built-in offline manifest scanner to build the spec deterministically.
 3. **Lean Runtime Infiltration**: Only language runtimes actually used by your project are included under `build_args`. A pure Python app gets `PYTHON_VERSION`; a Node app gets `NODE_VERSION`. Unused runtimes are completely omitted.
-4. **Explicit Flag Precedence**: Any CLI flags you pass (`--agent`, `--sbx`, `--clone`, `--dockerfile`, `--with-kit`) strictly override inferred spec fields.
+4. **Explicit Flag Precedence**: Any CLI flags you pass (`--agent`, `--analyzer`, `--sbx`, `--clone`, `--dockerfile`, `--with-kit`) strictly override inferred spec fields.
 5. **Host-Side Spec Writer**: The AI agent returns a clean JSON spec to stdout, and the host `agy-sandbox` tool writes `agy.yaml` (and optional `Dockerfile.agy`).
 
 ### 🛠️ CLI Command Reference
@@ -58,17 +57,21 @@ agy-sandbox auto-init --omp
 - `agy-sandbox init`  
   Generates a manual template `agy.yaml` in your project workspace.  
   Options:
-  - `--agent <agent>`: Primary agent harness (`agy`, `claude`, `opencode`, `codex`, `omp`, `prime-agent`, `shell`). Default: `agy`.
-  - `--prime`: Initialize using Prime Agent (`prime-agent`) harness with stacked Node 22 base layer (`agy-base-prime:latest`).
-  - `--omp`: Initialize using Oh My Pi (`omp`) harness.
-  - `--with-agent <agent>`: Seed an additional agent harness kit (can be repeated).
+  - `--agent <agents>`: Container agent harness(es) (comma-separated or repeated). The first agent is primary, and all listed agents are added as kits.
   - `--sbx`: Enable Docker Sandboxes (`sbx`) mode.
   - `--clone`: Enable isolated git clone mode inside the microVM.
   - `--dockerfile`: Scaffold a local, customizable `Dockerfile.agy`.
-  - `--with-kit <kit>`: Seed a bundled mixin kit (e.g. `chrome-devtools`, `mojo-stdlib`).
+  - `--with-kit <kit>`: Seed a bundled or local mixin kit (e.g. `chrome-devtools`, `./my-custom-kit`).
 
 - `agy-sandbox auto-init`  
-  Smart spec builder. Inspects project manifests in read-only mode and outputs a lean `agy.yaml`.
+  Smart spec builder. Inspects project manifests in read-only mode and outputs a lean `agy.yaml`.  
+  Options:
+  - `--analyzer <agent>`: Specify host AI agent for read-only codebase analysis (e.g. `opencode`, `claude`, `agy`). Host-only; not added to container kits unless also in `--agent`.
+  - `--agent <agents>`: Container agent harness(es) (e.g. `opencode,omp,prime-agent`). First agent is primary; all listed agents are added to `sbx.kits`.
+  - `--sbx`: Configure Docker Sandboxes (`sbx`) mode in auto-generated `agy.yaml`.
+  - `--clone`: Configure clone mode in auto-generated `agy.yaml`.
+  - `--dockerfile`: Scaffold a customizable `Dockerfile.agy` in project workspace.
+  - `--with-kit <kit>`: Add bundled or local mixin kit (can be repeated).
 
 - `agy-sandbox up`  
   Launches or resumes the sandbox microVM and attaches to the agent session.  

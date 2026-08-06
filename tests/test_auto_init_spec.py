@@ -125,13 +125,12 @@ Done!"""
             os.chdir(tmp_dir)
             try:
                 args = argparse.Namespace(
-                    agent="opencode",
+                    analyzer="claude",
+                    agent=["opencode,omp,prime-agent"],
                     sbx=True,
                     clone=True,
-                    with_kit=["opencode"],
-                    with_agent=[],
+                    with_kit=[],
                     dockerfile=False,
-                    omp=False,
                 )
 
                 with patch("agy_sandbox.cli.run_read_only_agent_analysis") as mock_analysis:
@@ -148,6 +147,11 @@ Done!"""
                 self.assertEqual(cfg.project_name, "auto-project")
                 self.assertEqual(cfg.sbx.agent, "opencode")
                 self.assertTrue(cfg.sbx.enabled)
+                self.assertIn("opencode", cfg.sbx.kits)
+                self.assertIn("omp", cfg.sbx.kits)
+                self.assertIn("prime-agent", cfg.sbx.kits)
+                self.assertNotIn("claude", cfg.sbx.kits)
+                self.assertNotIn(".", cfg.sbx.kits)
             finally:
                 os.chdir(orig_cwd)
 
