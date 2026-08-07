@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List, Optional
 
-from .constants import AGENT_SPECS, BASE_DOCKERFILE_NAME, DEFAULT_BUILD_ARGS, DEFAULT_ENV_VARS
+from .constants import AGENT_SPECS, BASE_DOCKERFILE_NAME, SUPPORTED_BUILD_ARGS, DEFAULT_ENV_VARS
 from .kits import list_bundled_kits
 
 
@@ -60,7 +60,7 @@ def build_auto_init_prompt(
     formatted_agents_list = "\n".join(agent_lines) if agent_lines else "- (No agent specs registered)"
 
     # 4. Dynamically list registered build args keys
-    default_args_keys = ", ".join(f"`{k}`" for k in DEFAULT_BUILD_ARGS.keys())
+    default_args_keys = ", ".join(f"`{k}`" for k in SUPPORTED_BUILD_ARGS)
 
     return (
         "READ-ONLY REPOSITORY ANALYSIS & ENVIRONMENT ARCHITECTURE INSTRUCTION:\n"

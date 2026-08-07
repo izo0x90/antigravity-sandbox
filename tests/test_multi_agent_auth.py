@@ -109,7 +109,7 @@ class TestMultiAgentAuth(unittest.TestCase):
         self.assertEqual(DEFAULT_CMD_TIMEOUT, 10)
         self.assertEqual(REMOVE_CMD_TIMEOUT, 15)
         self.assertEqual(EXIT_CODE_INTERRUPTED, 130)
-        self.assertIn("PYTHON_VERSION", DEFAULT_BUILD_ARGS)
+        self.assertIsInstance(DEFAULT_BUILD_ARGS, dict)
 
 
 if __name__ == "__main__":

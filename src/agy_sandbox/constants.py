@@ -45,13 +45,9 @@ BANNER_WIDTH = 78
 EXIT_CODE_INTERRUPTED = 130
 
 # Default Config Specifications
-DEFAULT_BUILD_ARGS = {
-    "PYTHON_VERSION": "3.11",
-    "NODE_VERSION": "20",
-    "RUST_VERSION": "stable",
-    "MOJO_VERSION": "latest",
-}
-DEFAULT_SETUP_SCRIPTS = ["npm install", "pip install -r requirements.txt"]
+SUPPORTED_BUILD_ARGS = ("PYTHON_VERSION", "NODE_VERSION", "RUST_VERSION", "MOJO_VERSION")
+DEFAULT_BUILD_ARGS = {}
+DEFAULT_SETUP_SCRIPTS = []
 DEFAULT_ENV_VARS = ["ENVIRONMENT=development"]
 
 # Terminal Support Defaults

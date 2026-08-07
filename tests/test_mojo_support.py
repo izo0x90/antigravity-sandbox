@@ -15,8 +15,7 @@ class TestMojoSupport(unittest.TestCase):
             write_default_config(path=config_path)
             
             config = load_config(config_path)
-            self.assertIn("MOJO_VERSION", config.build_args)
-            self.assertEqual(config.build_args["MOJO_VERSION"], "latest")
+            self.assertEqual(config.build_args, {})
 
     def test_bundled_kits_includes_mojo_stdlib(self):
         kits = list_bundled_kits()

@@ -1,10 +1,18 @@
 ARG BASE_IMAGE=agy-base:latest
 FROM ${BASE_IMAGE}
 
-RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
+ARG TARGETARCH
 
-RUN export PRIME_AGENT_INSTALLER_PLAIN=1 && \
+# Install Node.js 22 into isolated private directory /opt/harnesses/prime-agent/node
+RUN NODE_ARCH=$(if [ "$TARGETARCH" = "arm64" ]; then echo "arm64"; else echo "x64"; fi) && \
+    mkdir -p /opt/harnesses/prime-agent/node && \
+    curl -fsSL "https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-${NODE_ARCH}.tar.xz" | tar -xJ --strip-components=1 -C /opt/harnesses/prime-agent/node
+
+# Install prime-agent using private isolated Node runtime without polluting global system paths
+RUN export PATH="/opt/harnesses/prime-agent/node/bin:$PATH" && \
+    export PRIME_AGENT_INSTALLER_PLAIN=1 && \
     export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=0 && \
-    curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
+    curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh && \
+    PRIME_BIN=$(which prime-agent 2>/dev/null || echo "/opt/harnesses/prime-agent/node/bin/prime-agent") && \
+    printf '#!/bin/sh\nexport PATH="/opt/harnesses/prime-agent/node/bin:$PATH"\nexec "%s" "$@"\n' "$PRIME_BIN" > /usr/local/bin/prime-agent && \
+    chmod +x /usr/local/bin/prime-agent

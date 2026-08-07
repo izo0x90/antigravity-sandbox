@@ -23,7 +23,8 @@ class TestAutoInitValidationSuite(unittest.TestCase):
     """
 
     def setUp(self):
-        self.supported_keys = set(DEFAULT_BUILD_ARGS.keys()) | {"APT_PACKAGES"}
+        from agy_sandbox.constants import SUPPORTED_BUILD_ARGS
+        self.supported_keys = set(SUPPORTED_BUILD_ARGS) | {"APT_PACKAGES"}
 
     def _verify_clean_spec_dict(self, spec_dict: dict):
         """Helper to ensure generated spec strictly adheres to supported schema."""
