@@ -155,20 +155,13 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
         setup_scripts.append("cargo fetch")
         print(f"  * Rust: Found {toolchain_file} -> extracted RUST_VERSION={rust_ver} (setup: cargo fetch)")
 
-    # Go
+    # Go (Unsupported runtime key -> mapped to APT_PACKAGES: golang-go)
     if "go.mod" in files:
-        go_ver = "1.22"
-        try:
-            with open(os.path.join(cwd, "go.mod"), "r", encoding="utf-8") as f:
-                content = f.read()
-                match = re.search(r"^go\s+([0-9]+\.[0-9]+)", content, flags=re.MULTILINE)
-                if match:
-                    go_ver = match.group(1)
-        except Exception:
-            pass
-        build_args["GO_VERSION"] = go_ver
+        apt_pkgs = build_args.get("APT_PACKAGES", "")
+        if "golang-go" not in apt_pkgs:
+            build_args["APT_PACKAGES"] = f"{apt_pkgs} golang-go".strip()
         setup_scripts.append("go mod download")
-        print(f"  * Go: Found go.mod -> extracted GO_VERSION={go_ver} (setup: go mod download)")
+        print("  * Go: Found go.mod -> added 'golang-go' to APT_PACKAGES (setup: go mod download)")
 
     # Mojo / Pixi
     if any(f in files for f in ("mojoproject.toml", "pixi.toml")) or any(f.endswith(".mojo") for f in files):

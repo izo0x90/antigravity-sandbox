@@ -167,10 +167,6 @@ def auto_init_command(args: argparse.Namespace) -> None:
     config = AgyConfig.from_dict(spec_dict)
     save_config(config, DEFAULT_CONFIG_FILE)
 
-    # Build config and save
-    config = AgyConfig.from_dict(spec_dict)
-    save_config(config, DEFAULT_CONFIG_FILE)
-
     # Check recommendations or args for Dockerfile creation
     recommendations = spec_dict.get("recommendations", {})
     dockerfile_needed = getattr(args, "dockerfile", False) or (

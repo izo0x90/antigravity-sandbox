@@ -79,27 +79,16 @@ class AgentSpec:
     sbx_agent_arg: str
     kit_ref: str
     cli_binary: str = ""
+    read_only_args: Tuple[str, ...] = ("-p", "{prompt}")
     sbx_secret_services: Tuple[str, ...] = ()
     signature_files: Tuple[str, ...] = ()
     auth_session_files: Tuple[str, ...] = ()
     profile_dir_name: str = ".gemini"
 
     def get_read_only_cmd(self, prompt: str, cwd: str) -> List[str]:
-        if not self.cli_binary:
+        if not self.cli_binary or not self.read_only_args:
             return []
-        if self.identifier == "agy":
-            return [self.cli_binary, "--add-dir", cwd, "--mode", "plan", "--print", prompt]
-        if self.identifier == "claude":
-            return [self.cli_binary, "-p", prompt]
-        if self.identifier == "opencode":
-            return [self.cli_binary, "run", "--agent", "plan", prompt]
-        if self.identifier == "codex":
-            return [self.cli_binary, "exec", prompt]
-        if self.identifier == "omp":
-            return [self.cli_binary, "-p", prompt, "--tools=read,grep,glob"]
-        if self.identifier == "prime-agent":
-            return [self.cli_binary, "-p", "--no-session", "--no-tools", prompt]
-        return [self.cli_binary, "-p", prompt]
+        return [self.cli_binary] + [arg.format(prompt=prompt, cwd=cwd) for arg in self.read_only_args]
 
 
 AGENT_SPECS: Dict[str, AgentSpec] = {
@@ -109,6 +98,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="gemini",
         kit_ref=DEFAULT_SBX_KIT_URL,
         cli_binary="agy",
+        read_only_args=("--add-dir", "{cwd}", "--mode", "plan", "--print", "{prompt}"),
         sbx_secret_services=("google",),
         signature_files=("antigravity.yaml",),
         auth_session_files=(".gemini",),
@@ -120,6 +110,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="claude",
         kit_ref="claude",
         cli_binary="claude",
+        read_only_args=("-p", "{prompt}"),
         sbx_secret_services=("anthropic",),
         signature_files=("CLAUDE.md", ".claude"),
         auth_session_files=(".claude.json", ".claude"),
@@ -131,6 +122,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="opencode",
         kit_ref="opencode",
         cli_binary="opencode",
+        read_only_args=("run", "--agent", "plan", "{prompt}"),
         sbx_secret_services=("openrouter", "anthropic", "openai", "google"),
         signature_files=("opencode.json", ".opencode"),
         auth_session_files=(".config/opencode/auth.json", ".opencode"),
@@ -142,6 +134,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="codex",
         kit_ref="codex",
         cli_binary="codex",
+        read_only_args=("exec", "{prompt}"),
         sbx_secret_services=("openai",),
         signature_files=(".codex",),
         auth_session_files=(".codex/auth.json", ".codex"),
@@ -153,6 +146,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="shell",
         kit_ref="omp",
         cli_binary="omp",
+        read_only_args=("-p", "{prompt}", "--tools=read,grep,glob"),
         signature_files=(),
         auth_session_files=(".omp",),
         profile_dir_name=".omp",
@@ -163,6 +157,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="shell",
         kit_ref="prime-agent",
         cli_binary="prime-agent",
+        read_only_args=("-p", "--no-session", "--no-tools", "{prompt}"),
         sbx_secret_services=("prime", "anthropic", "openai", "google"),
         signature_files=("AGENTS.md", ".prime"),
         auth_session_files=(".prime",),
@@ -174,6 +169,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="shell",
         kit_ref="",
         cli_binary="",
+        read_only_args=(),
         signature_files=(),
         auth_session_files=(),
         profile_dir_name=".shell",
