@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from . import __version__
 from .config import AgyConfig, load_config, save_config, write_default_config
 from .constants import (
     AGENT_AGY,
@@ -311,6 +312,12 @@ def kits_add_command(args: argparse.Namespace) -> None:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Antigravity Sandbox CLI")
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # init
