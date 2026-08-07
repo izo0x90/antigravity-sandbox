@@ -58,12 +58,52 @@ class DockerRunner:
         subprocess.run(cmd, check=True)
 
     @classmethod
-    def build_omp_base_image(cls) -> None:
+    def ensure_default_base_image(cls) -> None:
         try:
             subprocess.run(["docker", "inspect", DEFAULT_BASE_IMAGE], capture_output=True, check=True)
         except subprocess.SubprocessError:
             cls.build_base_image()
 
+    @classmethod
+    def build_stacked_base_image(cls, config: AgyConfig) -> str:
+        """
+        Sequentially builds and stacks base image layers for all requested agents/kits.
+        Returns the final effective base image tag to be passed to the project Dockerfile.
+        """
+        layer_specs = [
+            spec for spec in config.get_requested_agent_specs()
+            if spec.dockerfile_name and spec.base_image_tag
+        ]
+
+        if not layer_specs:
+            return DEFAULT_BASE_IMAGE
+
+        cls.ensure_default_base_image()
+        current_base = DEFAULT_BASE_IMAGE
+
+        for spec in layer_specs:
+            dockerfile_path, context_dir = cls.resolve_docker_context(spec.dockerfile_name)
+            print(f"Building stacked base image layer '{spec.base_image_tag}' from '{current_base}'...")
+            cmd = [
+                "docker",
+                "build",
+                "-t",
+                spec.base_image_tag,
+                "-f",
+                str(dockerfile_path),
+                "--build-arg",
+                f"BASE_IMAGE={current_base}",
+                str(context_dir),
+            ]
+            subprocess.run(cmd, check=True)
+            current_base = spec.base_image_tag
+
+        return current_base
+
+    @classmethod
+    def build_omp_base_image(cls) -> None:
+        """Deprecated wrapper retained for backward compatibility."""
+        cls.ensure_default_base_image()
         dockerfile_path, context_dir = cls.resolve_docker_context(OMP_DOCKERFILE_NAME)
 
         print(f"Building stacked base image {OMP_BASE_IMAGE}...")
@@ -74,17 +114,16 @@ class DockerRunner:
             OMP_BASE_IMAGE,
             "-f",
             str(dockerfile_path),
+            "--build-arg",
+            f"BASE_IMAGE={DEFAULT_BASE_IMAGE}",
             str(context_dir),
         ]
         subprocess.run(cmd, check=True)
 
     @classmethod
     def build_prime_base_image(cls) -> None:
-        try:
-            subprocess.run(["docker", "inspect", DEFAULT_BASE_IMAGE], capture_output=True, check=True)
-        except subprocess.SubprocessError:
-            cls.build_base_image()
-
+        """Deprecated wrapper retained for backward compatibility."""
+        cls.ensure_default_base_image()
         dockerfile_path, context_dir = cls.resolve_docker_context(PRIME_DOCKERFILE_NAME)
 
         print(f"Building stacked base image {PRIME_BASE_IMAGE}...")
@@ -95,6 +134,8 @@ class DockerRunner:
             PRIME_BASE_IMAGE,
             "-f",
             str(dockerfile_path),
+            "--build-arg",
+            f"BASE_IMAGE={DEFAULT_BASE_IMAGE}",
             str(context_dir),
         ]
         subprocess.run(cmd, check=True)
@@ -104,10 +145,7 @@ class DockerRunner:
         image_name = config.image_name
         local_dockerfile = Path(LOCAL_DOCKERFILE_NAME)
 
-        if config.is_omp_requested:
-            cls.build_omp_base_image()
-        elif config.is_prime_requested:
-            cls.build_prime_base_image()
+        effective_base = cls.build_stacked_base_image(config)
 
         if local_dockerfile.exists():
             dockerfile_path = local_dockerfile
@@ -126,10 +164,8 @@ class DockerRunner:
             str(dockerfile_path),
         ]
 
-        if config.is_omp_requested and "BASE_IMAGE" not in config.build_args:
-            build_cmd.extend(["--build-arg", f"BASE_IMAGE={OMP_BASE_IMAGE}"])
-        elif config.is_prime_requested and "BASE_IMAGE" not in config.build_args:
-            build_cmd.extend(["--build-arg", f"BASE_IMAGE={PRIME_BASE_IMAGE}"])
+        if "BASE_IMAGE" not in config.build_args:
+            build_cmd.extend(["--build-arg", f"BASE_IMAGE={effective_base}"])
 
         for key, val in config.build_args.items():
             build_cmd.extend(["--build-arg", f"{key}={val}"])

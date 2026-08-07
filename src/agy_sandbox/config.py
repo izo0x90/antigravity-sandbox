@@ -56,13 +56,42 @@ class AgyConfig:
     def image_name(self) -> str:
         return SandboxNamingResolver.resolve_image_name(self.project_name)
 
+    def get_requested_agent_specs(self) -> List[AgentSpec]:
+        """
+        Dynamically collects and resolves all requested agent specifications from
+        self.agent, self.sbx.agent, and self.sbx.kits in insertion order without duplicates.
+        """
+        requested_keys: List[str] = []
+
+        def _add_key(key: str) -> None:
+            if not key:
+                return
+
+            norm_key = os.path.basename(key.rstrip("/\\")) if ("/" in key or "\\" in key) else key
+
+            if key in AGENT_SPECS and key not in requested_keys:
+                requested_keys.append(key)
+            elif norm_key in AGENT_SPECS and norm_key not in requested_keys:
+                requested_keys.append(norm_key)
+            else:
+                for spec_key, spec in AGENT_SPECS.items():
+                    if spec.kit_ref and (spec.kit_ref == key or spec.kit_ref == norm_key) and spec_key not in requested_keys:
+                        requested_keys.append(spec_key)
+
+        _add_key(self.agent)
+        _add_key(self.sbx.agent)
+        for kit in self.sbx.kits:
+            _add_key(kit)
+
+        return [AGENT_SPECS[k] for k in requested_keys]
+
     @property
     def is_omp_requested(self) -> bool:
-        return KIT_OMP in self.sbx.kits or self.sbx.agent == AGENT_OMP or self.agent == AGENT_OMP
+        return any(spec.identifier == AGENT_OMP for spec in self.get_requested_agent_specs())
 
     @property
     def is_prime_requested(self) -> bool:
-        return KIT_PRIME_AGENT in self.sbx.kits or self.sbx.agent == AGENT_PRIME_AGENT or self.agent == AGENT_PRIME_AGENT
+        return any(spec.identifier == AGENT_PRIME_AGENT for spec in self.get_requested_agent_specs())
 
     @property
     def agent_spec(self) -> AgentSpec:

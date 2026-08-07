@@ -79,6 +79,8 @@ class AgentSpec:
     sbx_agent_arg: str
     kit_ref: str
     cli_binary: str = ""
+    dockerfile_name: str = ""
+    base_image_tag: str = ""
     read_only_args: Tuple[str, ...] = ("-p", "{prompt}")
     sbx_secret_services: Tuple[str, ...] = ()
     signature_files: Tuple[str, ...] = ()
@@ -146,6 +148,8 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="shell",
         kit_ref="omp",
         cli_binary="omp",
+        dockerfile_name=OMP_DOCKERFILE_NAME,
+        base_image_tag=OMP_BASE_IMAGE,
         read_only_args=("-p", "{prompt}", "--tools=read,grep,glob"),
         signature_files=(),
         auth_session_files=(".omp",),
@@ -157,6 +161,8 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         sbx_agent_arg="shell",
         kit_ref="prime-agent",
         cli_binary="prime-agent",
+        dockerfile_name=PRIME_DOCKERFILE_NAME,
+        base_image_tag=PRIME_BASE_IMAGE,
         read_only_args=("-p", "--no-session", "--no-tools", "{prompt}"),
         sbx_secret_services=("prime", "anthropic", "openai", "google"),
         signature_files=("AGENTS.md", ".prime"),

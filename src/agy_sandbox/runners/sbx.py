@@ -108,12 +108,16 @@ class SbxRunner:
         if config.auth_mode != "sbx_proxy":
             return
 
-        spec = config.agent_spec
-        if not spec.sbx_secret_services:
+        secret_services = set()
+        for spec in config.get_requested_agent_specs():
+            if spec.sbx_secret_services:
+                secret_services.update(spec.sbx_secret_services)
+
+        if not secret_services:
             return
 
         sandbox_name = config.sandbox_name
-        for service in spec.sbx_secret_services:
+        for service in sorted(secret_services):
             print(f"Configuring SBX proxy secret for service '{service}' in sandbox '{sandbox_name}'...")
             cmd = ["sbx", "secret", "set", sandbox_name, service]
             try:
