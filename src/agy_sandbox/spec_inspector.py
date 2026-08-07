@@ -62,18 +62,27 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
     build_args = {}
     setup_scripts = []
+    env_vars = list(DEFAULT_ENV_VARS)
 
-    # Local manifest inspection
     files = set(os.listdir(cwd)) if os.path.isdir(cwd) else set()
 
     # Python
-    if any(f in files for f in ("pyproject.toml", "requirements.txt", "Pipfile", "environment.yml")):
+    if any(f in files for f in ("pyproject.toml", "requirements.txt", "Pipfile", "environment.yml", ".python-version")):
         python_ver = DEFAULT_BUILD_ARGS.get("PYTHON_VERSION", "3.11")
-        if "pyproject.toml" in files:
+        if ".python-version" in files:
+            try:
+                with open(os.path.join(cwd, ".python-version"), "r", encoding="utf-8") as f:
+                    ver_line = f.read().strip()
+                    match = re.search(r"([0-9]+\.[0-9]+)", ver_line)
+                    if match:
+                        python_ver = match.group(1)
+            except Exception:
+                pass
+        elif "pyproject.toml" in files:
             try:
                 with open(os.path.join(cwd, "pyproject.toml"), "r", encoding="utf-8") as f:
                     content = f.read()
-                    match = re.search(r'python\s*=\s*"[\^~>=]*([0-9]+\.[0-9]+)"', content)
+                    match = re.search(r'(?:requires-python|python)\s*=\s*"[\^~>=]*([0-9]+\.[0-9]+)"', content)
                     if match:
                         python_ver = match.group(1)
             except Exception:
@@ -81,44 +90,149 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
         build_args["PYTHON_VERSION"] = python_ver
 
-        if "requirements.txt" in files:
-            setup_scripts.append("pip install -r requirements.txt")
-        elif "pyproject.toml" in files:
+        if "uv.lock" in files or "pyproject.toml" in files:
             setup_scripts.append("uv sync")
+        elif "requirements.txt" in files:
+            setup_scripts.append("pip install -r requirements.txt")
 
     # Node.js
-    if "package.json" in files:
+    if any(f in files for f in ("package.json", ".nvmrc", ".node-version")):
         node_ver = DEFAULT_BUILD_ARGS.get("NODE_VERSION", "20")
-        setup_scripts.append("npm install")
-        try:
-            with open(os.path.join(cwd, "package.json"), "r", encoding="utf-8") as f:
-                content = f.read()
-                match = re.search(r'"node":\s*"[\^~>=]*([0-9]+)"', content)
-                if match:
-                    node_ver = match.group(1)
-        except Exception:
-            pass
+        if ".nvmrc" in files or ".node-version" in files:
+            nvm_file = ".nvmrc" if ".nvmrc" in files else ".node-version"
+            try:
+                with open(os.path.join(cwd, nvm_file), "r", encoding="utf-8") as f:
+                    ver_line = f.read().strip()
+                    match = re.search(r"([0-9]+)", ver_line)
+                    if match:
+                        node_ver = match.group(1)
+            except Exception:
+                pass
+        elif "package.json" in files:
+            try:
+                with open(os.path.join(cwd, "package.json"), "r", encoding="utf-8") as f:
+                    content = f.read()
+                    match = re.search(r'"node":\s*"[\^~>=]*([0-9]+)"', content)
+                    if match:
+                        node_ver = match.group(1)
+            except Exception:
+                pass
+
         build_args["NODE_VERSION"] = node_ver
 
-    # Rust
-    if "Cargo.toml" in files:
-        build_args["RUST_VERSION"] = DEFAULT_BUILD_ARGS.get("RUST_VERSION", "stable")
+        if "pnpm-lock.yaml" in files:
+            setup_scripts.append("pnpm install")
+        elif "yarn.lock" in files:
+            setup_scripts.append("yarn install")
+        elif "package.json" in files:
+            setup_scripts.append("npm install")
 
-    # Mojo
+    # Rust
+    if any(f in files for f in ("Cargo.toml", "rust-toolchain.toml", "rust-toolchain")):
+        rust_ver = DEFAULT_BUILD_ARGS.get("RUST_VERSION", "stable")
+        
+        # Check rust-toolchain.toml / rust-toolchain
+        toolchain_file = "rust-toolchain.toml" if "rust-toolchain.toml" in files else ("rust-toolchain" if "rust-toolchain" in files else None)
+        if toolchain_file:
+            try:
+                with open(os.path.join(cwd, toolchain_file), "r", encoding="utf-8") as f:
+                    content = f.read()
+                    match = re.search(r'channel\s*=\s*"([^"]+)"', content)
+                    if match:
+                        rust_ver = match.group(1)
+            except Exception:
+                pass
+        elif "Cargo.toml" in files:
+            try:
+                with open(os.path.join(cwd, "Cargo.toml"), "r", encoding="utf-8") as f:
+                    content = f.read()
+                    match = re.search(r'rust-version\s*=\s*"([^"]+)"', content)
+                    if match:
+                        rust_ver = match.group(1)
+            except Exception:
+                pass
+
+        build_args["RUST_VERSION"] = rust_ver
+        setup_scripts.append("cargo fetch")
+
+    # Go
+    if "go.mod" in files:
+        go_ver = "1.22"
+        try:
+            with open(os.path.join(cwd, "go.mod"), "r", encoding="utf-8") as f:
+                content = f.read()
+                match = re.search(r"^go\s+([0-9]+\.[0-9]+)", content, flags=re.MULTILINE)
+                if match:
+                    go_ver = match.group(1)
+        except Exception:
+            pass
+        build_args["GO_VERSION"] = go_ver
+        setup_scripts.append("go mod download")
+
+    # Mojo / Pixi
     if any(f in files for f in ("mojoproject.toml", "pixi.toml")) or any(f.endswith(".mojo") for f in files):
         build_args["MOJO_VERSION"] = DEFAULT_BUILD_ARGS.get("MOJO_VERSION", "latest")
+
+    # Makefile setup target detection
+    if "Makefile" in files:
+        try:
+            with open(os.path.join(cwd, "Makefile"), "r", encoding="utf-8") as f:
+                content = f.read()
+                if re.search(r"^setup:", content, flags=re.MULTILINE):
+                    if "make setup" not in setup_scripts:
+                        setup_scripts.append("make setup")
+                elif re.search(r"^init:", content, flags=re.MULTILINE):
+                    if "make init" not in setup_scripts:
+                        setup_scripts.append("make init")
+        except Exception:
+            pass
+
+    # Environmental variable inference from .env.example
+    if ".env.example" in files or ".env.template" in files:
+        env_file = ".env.example" if ".env.example" in files else ".env.template"
+        try:
+            with open(os.path.join(cwd, env_file), "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k and not any(secret in k.lower() for secret in ("key", "secret", "token", "password")):
+                            env_entry = f"{k}={v}"
+                            if env_entry not in env_vars:
+                                env_vars.append(env_entry)
+        except Exception:
+            pass
 
     agent = explicit.get("agent", "agy")
     sbx_enabled = explicit.get("sbx", False)
     clone_enabled = explicit.get("clone", False)
     kits = list(explicit.get("kits", []))
 
+    # Smart kit auto-detection during offline scan
+    # Check for browser automation dependencies -> add chrome-devtools
+    for manifest_file in ("package.json", "pyproject.toml", "Cargo.toml", "requirements.txt"):
+        if manifest_file in files:
+            try:
+                with open(os.path.join(cwd, manifest_file), "r", encoding="utf-8") as f:
+                    manifest_content = f.read().lower()
+                    if any(browser_tool in manifest_content for browser_tool in ("playwright", "puppeteer", "selenium", "cypress")):
+                        if "chrome-devtools" not in kits:
+                            kits.append("chrome-devtools")
+                        break
+            except Exception:
+                pass
+
+    # Check for Mojo / Pixi stdlib development -> add mojo-stdlib
+    if any(f in files for f in ("mojoproject.toml", "pixi.toml")) or any(f.endswith(".mojo") for f in files):
+        if "mojo-stdlib" not in kits:
+            kits.append("mojo-stdlib")
+
     return {
         "project_name": project_name,
         "profile": "default",
         "build_args": build_args,
         "setup_scripts": setup_scripts,
-        "env": list(DEFAULT_ENV_VARS),
+        "env": env_vars,
         "sbx": {
             "enabled": sbx_enabled,
             "agent": agent,
@@ -127,7 +241,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
         },
         "recommendations": {
             "dockerfile_needed": False,
-            "reason": "Offline local inspection generated default configuration from project manifests.",
+            "reason": "Offline local inspection generated spec from project manifests.",
         },
     }
 

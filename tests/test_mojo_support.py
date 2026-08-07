@@ -33,7 +33,7 @@ class TestMojoSupport(unittest.TestCase):
     def test_auto_init_prompt_mentions_mojo(self):
         prompt = build_auto_init_prompt(sbx_enabled=True, agent="agy", clone_enabled=True)
         self.assertIn("MOJO_VERSION", prompt)
-        self.assertIn("pixi.toml", prompt)
+        self.assertIn("mojo-stdlib", prompt)
 
 
 if __name__ == "__main__":

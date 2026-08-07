@@ -1,5 +1,20 @@
+from pathlib import Path
 from typing import List, Optional
-from .constants import AGENT_SPECS
+
+from .constants import AGENT_SPECS, BASE_DOCKERFILE_NAME, DEFAULT_BUILD_ARGS, DEFAULT_ENV_VARS
+from .kits import list_bundled_kits
+
+
+def get_base_dockerfile_content() -> str:
+    """Reads the raw Dockerfile.base content directly from disk."""
+    base_dockerfile_path = Path(__file__).resolve().parent / "docker" / BASE_DOCKERFILE_NAME
+    if base_dockerfile_path.exists():
+        try:
+            with open(base_dockerfile_path, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return "# Base Dockerfile not available on disk"
 
 
 def build_auto_init_prompt(
@@ -9,44 +24,89 @@ def build_auto_init_prompt(
     kits: Optional[List[str]] = None,
 ) -> str:
     """
-    Constructs an explicit read-only prompt for an AI harness to analyze a project workspace
-    and output a raw, structured BoxSpec JSON payload.
+    Constructs a fully dynamic read-only prompt for an AI harness to analyze a project workspace.
+    Dynamically injects Level 1 Dockerfile.base content, registered agent specs, bundled mixin kits,
+    and runtime specs directly from the application registry.
     """
     default_kits = []
     if sbx_enabled:
         if agent in AGENT_SPECS:
             kit_ref = AGENT_SPECS[agent].kit_ref
-            if kit_ref and kit_ref not in default_kits:
+            if kit_ref and kit_ref not in default_kits and kit_ref != ".":
                 default_kits.append(kit_ref)
-        if "." not in default_kits:
-            default_kits.append(".")
         if kits:
             for k in kits:
-                if k not in default_kits:
+                if k and k != "." and k not in default_kits:
                     default_kits.append(k)
 
+    # 1. Read Level 1 Base Dockerfile
+    base_dockerfile_text = get_base_dockerfile_content()
+
+    # 2. Dynamically list bundled mixin kits on disk
+    bundled_kits = list_bundled_kits()
+    kit_lines = [
+        f"- `{k['name']}`: {k['display_name']} - {k['description']}"
+        for k in bundled_kits
+    ]
+    formatted_kits_list = "\n".join(kit_lines) if kit_lines else "- (No bundled mixin kits found)"
+
+    # 3. Dynamically list registered agent harnesses
+    agent_lines = []
+    for agent_id, spec in AGENT_SPECS.items():
+        if agent_id == "shell":
+            continue
+        sigs = f" (signature files: {', '.join(spec.signature_files)})" if spec.signature_files else ""
+        agent_lines.append(f"- `{agent_id}`: {spec.display_name}{sigs}")
+    formatted_agents_list = "\n".join(agent_lines) if agent_lines else "- (No agent specs registered)"
+
+    # 4. Dynamically list registered build args keys
+    default_args_keys = ", ".join(f"`{k}`" for k in DEFAULT_BUILD_ARGS.keys())
+
     return (
-        "READ-ONLY ANALYSIS INSTRUCTION:\n"
-        "Please inspect the current project repository (e.g., pyproject.toml, package.json, Cargo.toml, "
-        "mojoproject.toml, pixi.toml, requirements.txt, etc.) in READ-ONLY mode. Do NOT edit, write, or modify any files.\n\n"
-        "CRITICAL RULE FOR RUNTIMES (build_args):\n"
-        "Include ONLY the runtime keys in `build_args` for languages that are explicitly present in this repository.\n"
-        "- If Python files/manifests exist -> include 'PYTHON_VERSION' (e.g. '3.11')\n"
-        "- If Node.js files/manifests exist -> include 'NODE_VERSION' (e.g. '20')\n"
-        "- If Rust files/manifests exist -> include 'RUST_VERSION' (e.g. 'stable')\n"
-        "- If Mojo/Pixi files/manifests exist -> include 'MOJO_VERSION' (e.g. 'latest')\n"
-        "OMIT any keys for languages/runtimes that are NOT used in this repository. Do NOT include unused runtimes!\n\n"
-        "Generate an optimal sandbox specification payload as a RAW JSON OBJECT. Do NOT include markdown formatting, "
-        "preambles, or conversational text.\n\n"
-        "EXPECTED JSON SCHEMA:\n"
+        "READ-ONLY REPOSITORY ANALYSIS & ENVIRONMENT ARCHITECTURE INSTRUCTION:\n"
+        "You are acting as a Principal Systems & Infrastructure Engineer inspecting this project repository to generate an optimal container sandbox configuration (`agy.yaml`).\n"
+        "Your goal is to analyze every layer of this codebase in READ-ONLY mode and produce a complete, self-contained sandbox specification that makes the workspace 100% buildable, testable, and ready for development out of the box. Do NOT edit, write, or modify any files.\n\n"
+        "======================================================================\n"
+        "LEVEL 1: PRE-INSTALLED BASE CONTAINER ENVIRONMENT (`Dockerfile.base`)\n"
+        "======================================================================\n"
+        "The sandbox container is built on top of `agy-base`, defined by this exact Dockerfile:\n\n"
+        "```dockerfile\n"
+        f"{base_dockerfile_text}\n"
+        "```\n\n"
+        "INSTRUCTION: Do NOT re-install utilities or tools that are already installed in Level 1 (e.g., `uv`, `curl`, `git`, `build-essential`, `pkg-config`, `libssl-dev`, `sudo`).\n\n"
+        "======================================================================\n"
+        "LEVEL 2: PER-PROJECT SPECIFICATION (`agy.yaml`)\n"
+        "======================================================================\n"
+        "Configure the workspace-specific requirements using `agy.yaml`:\n\n"
+        "1. `build_args`:\n"
+        f"   - RUNTIMES: Extract exact version numbers for present languages (e.g., standard keys: {default_args_keys}, or any custom key like `GO_VERSION`, `ZIG_VERSION`). Clean constraint symbols (`>=`, `^`, `~`, `=`).\n"
+        "   - SYSTEM PACKAGES (`APT_PACKAGES`): Identify any ADDITIONAL C/C++ libraries or CLI tools needed specifically by this repository beyond Level 1 (e.g., `cmake`, `libpq-dev`, `ffmpeg`, `protobuf-compiler`).\n"
+        "   - OMIT unused keys.\n\n"
+        "2. `setup_scripts`:\n"
+        "   - Ordered list of commands to bootstrap dependencies, code generation, and verification (e.g., `cargo fetch`, `uv sync`, `pnpm install`, `go mod download`, `make setup`, `cargo check`). Note: `uv` is already in Level 1, do NOT add `pip install uv`.\n\n"
+        "3. `env`:\n"
+        "   - Default, non-secret environment variables extracted from `.env.example`, `docker-compose.yml`, etc.\n\n"
+        "4. `sbx.kits` (COMPOSABLE MIXIN KITS & AGENTS):\n"
+        "   AVAILABLE BUNDLED MIXIN KITS:\n"
+        f"{formatted_kits_list}\n\n"
+        "   AVAILABLE AGENT HARNESSES:\n"
+        f"{formatted_agents_list}\n\n"
+        "======================================================================\n"
+        "OUTPUT FORMAT\n"
+        "======================================================================\n"
+        "Output your findings as a single RAW JSON OBJECT adhering strictly to this schema:\n\n"
         "{\n"
         '  "project_name": "<slugified-project-name>",\n'
         '  "profile": "default",\n'
         '  "build_args": {\n'
-        '    "<ONLY_PRESENT_RUNTIMES>": "<version_string>"\n'
+        '    "<PRESENT_RUNTIME_OR_APT_KEY>": "<extracted_value>"\n'
         "  },\n"
-        '  "setup_scripts": ["<inferred setup commands for present languages only, e.g., uv sync>"],\n'
-        '  "env": ["ENVIRONMENT=development"],\n'
+        '  "setup_scripts": [\n'
+        '    "<inferred setup and bootstrapping commands>"\n'
+        "  ],\n"
+        '  "env": [\n'
+        '    "ENVIRONMENT=development"\n'
+        "  ],\n"
         '  "sbx": {\n'
         f'    "enabled": {"true" if sbx_enabled else "false"},\n'
         f'    "agent": "{agent}",\n'
@@ -58,6 +118,5 @@ def build_auto_init_prompt(
         '    "reason": "<explanation if custom Dockerfile.agy is recommended>"\n'
         "  }\n"
         "}\n\n"
-        "CRITICAL: The sandbox environment already has `uv` globally installed. Do NOT add `pip install uv`. "
-        "Output ONLY the valid JSON object."
+        "Output ONLY valid JSON without markdown code blocks, preambles, or explanations."
     )

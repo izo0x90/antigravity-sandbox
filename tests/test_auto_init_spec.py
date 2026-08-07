@@ -46,11 +46,27 @@ Done!"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             pyproject = os.path.join(tmp_dir, "pyproject.toml")
             with open(pyproject, "w", encoding="utf-8") as f:
-                f.write('python = "^3.11"\n')
+                f.write('requires-python = ">=3.12"\n')
 
             pkg_json = os.path.join(tmp_dir, "package.json")
             with open(pkg_json, "w", encoding="utf-8") as f:
                 f.write('{"engines": {"node": ">=18"}}\n')
+
+            cargo_toml = os.path.join(tmp_dir, "Cargo.toml")
+            with open(cargo_toml, "w", encoding="utf-8") as f:
+                f.write('[package]\nname = "test"\nrust-version = "1.85.0"\n')
+
+            go_mod = os.path.join(tmp_dir, "go.mod")
+            with open(go_mod, "w", encoding="utf-8") as f:
+                f.write('module test\n\ngo 1.22\n')
+
+            makefile = os.path.join(tmp_dir, "Makefile")
+            with open(makefile, "w", encoding="utf-8") as f:
+                f.write('setup:\n\t@echo "setting up"\n')
+
+            env_ex = os.path.join(tmp_dir, ".env.example")
+            with open(env_ex, "w", encoding="utf-8") as f:
+                f.write('PORT=8080\nENVIRONMENT=staging\nSECRET_KEY=12345\n')
 
             spec = generate_offline_box_spec(
                 tmp_dir,
@@ -64,9 +80,17 @@ Done!"""
 
             self.assertTrue(spec["sbx"]["enabled"])
             self.assertEqual(spec["sbx"]["agent"], "opencode")
-            self.assertEqual(spec["build_args"]["PYTHON_VERSION"], "3.11")
+            self.assertEqual(spec["build_args"]["PYTHON_VERSION"], "3.12")
             self.assertEqual(spec["build_args"]["NODE_VERSION"], "18")
-            self.assertNotIn("RUST_VERSION", spec["build_args"])
+            self.assertEqual(spec["build_args"]["RUST_VERSION"], "1.85.0")
+            self.assertEqual(spec["build_args"]["GO_VERSION"], "1.22")
+            self.assertIn("cargo fetch", spec["setup_scripts"])
+            self.assertIn("go mod download", spec["setup_scripts"])
+            self.assertIn("make setup", spec["setup_scripts"])
+            self.assertIn("PORT=8080", spec["env"])
+            self.assertIn("ENVIRONMENT=staging", spec["env"])
+            # SECRET_KEY should be filtered out
+            self.assertNotIn("SECRET_KEY=12345", spec["env"])
             self.assertNotIn("MOJO_VERSION", spec["build_args"])
 
     def test_discover_available_agent(self):
@@ -113,8 +137,12 @@ Done!"""
             clone_enabled=True,
             kits=["claude", "chrome-devtools"],
         )
-        self.assertIn("READ-ONLY ANALYSIS INSTRUCTION", prompt)
-        self.assertIn("EXPECTED JSON SCHEMA", prompt)
+        self.assertIn("READ-ONLY REPOSITORY ANALYSIS", prompt)
+        self.assertIn("LEVEL 1: PRE-INSTALLED BASE CONTAINER ENVIRONMENT", prompt)
+        self.assertIn("ubuntu:22.04", prompt)
+        self.assertIn("chrome-devtools", prompt)
+        self.assertIn("opencode", prompt)
+        self.assertIn("OUTPUT FORMAT", prompt)
         self.assertIn("claude", prompt)
 
     def test_auto_init_command_integration(self):

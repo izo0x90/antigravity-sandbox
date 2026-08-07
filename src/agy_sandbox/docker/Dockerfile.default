@@ -16,6 +16,7 @@ ARG PYTHON_VERSION=3.11
 ARG NODE_VERSION=20
 ARG RUST_VERSION=stable
 ARG MOJO_VERSION=latest
+ARG APT_PACKAGES=""
 
 # Set global environment variables so cargo, rustup, pixi, and mojo are accessible to all users
 ENV RUSTUP_HOME=/usr/local/rustup \
@@ -24,6 +25,12 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:/usr/local/pixi/bin:$PATH
 
 # --- RUNTIME SETUP ---
+
+# Install extra system packages if specified in build_args.APT_PACKAGES
+RUN if [ -n "${APT_PACKAGES}" ]; then \
+      apt-get update && apt-get install -y ${APT_PACKAGES} && \
+      rm -rf /var/lib/apt/lists/* ; \
+    fi
 
 # Install Python and dynamically symlink to standard global bin paths.
 # No hardcoded architecture or directory assumptions are used here!
