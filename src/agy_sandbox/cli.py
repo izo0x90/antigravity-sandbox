@@ -94,6 +94,14 @@ def auto_init_command(args: argparse.Namespace) -> None:
 
     discovered_spec = discover_available_agent(analyzer_target)
 
+    if analyzer_target and analyzer_target in AGENT_SPECS:
+        req_spec = AGENT_SPECS[analyzer_target]
+        if not discovered_spec:
+            print(f"⚠️  Requested analyzer '{req_spec.display_name}' ({analyzer_target}) is not installed on PATH.")
+        elif discovered_spec.identifier != analyzer_target:
+            print(f"⚠️  Requested analyzer '{req_spec.display_name}' ({analyzer_target}) is not installed on PATH.")
+            print(f"-> Falling back to available host analyzer '{discovered_spec.display_name}' ({discovered_spec.identifier})...")
+
     sbx_enabled = args.sbx or (primary_agent != AGENT_AGY) or bool(additional_agents) or bool(args.with_kit)
     clone_enabled = args.clone or sbx_enabled
 
@@ -121,9 +129,11 @@ def auto_init_command(args: argparse.Namespace) -> None:
 
     if not spec_dict:
         if discovered_spec:
-            print("Note: Agent analysis did not return a valid spec payload. Using local offline inspector.")
+            print(f"⚠️  AI analyzer '{discovered_spec.display_name}' did not return a valid spec payload.")
+            print("-> Falling back to local offline inspector (programmatic manifest parser)...")
         else:
-            print("Note: No AI harness CLI found on PATH. Using local offline inspector.")
+            print("⚠️  No AI harness CLI found on PATH.")
+            print("-> Falling back to local offline inspector (programmatic manifest parser)...")
         spec_dict = generate_offline_box_spec(
             cwd,
             explicit_args={

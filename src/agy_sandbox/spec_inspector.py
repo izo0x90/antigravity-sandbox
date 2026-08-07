@@ -66,9 +66,12 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
     files = set(os.listdir(cwd)) if os.path.isdir(cwd) else set()
 
+    print("🔍 [Offline Inspector] Programmatically scanning repository manifests...")
+
     # Python
     if any(f in files for f in ("pyproject.toml", "requirements.txt", "Pipfile", "environment.yml", ".python-version")):
         python_ver = DEFAULT_BUILD_ARGS.get("PYTHON_VERSION", "3.11")
+        py_file = "pyproject.toml" if "pyproject.toml" in files else ("requirements.txt" if "requirements.txt" in files else ".python-version")
         if ".python-version" in files:
             try:
                 with open(os.path.join(cwd, ".python-version"), "r", encoding="utf-8") as f:
@@ -90,14 +93,14 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
         build_args["PYTHON_VERSION"] = python_ver
 
-        if "uv.lock" in files or "pyproject.toml" in files:
-            setup_scripts.append("uv sync")
-        elif "requirements.txt" in files:
-            setup_scripts.append("pip install -r requirements.txt")
+        py_setup = "uv sync" if ("uv.lock" in files or "pyproject.toml" in files) else "pip install -r requirements.txt"
+        setup_scripts.append(py_setup)
+        print(f"  * Python: Found {py_file} -> extracted PYTHON_VERSION={python_ver} (setup: {py_setup})")
 
     # Node.js
     if any(f in files for f in ("package.json", ".nvmrc", ".node-version")):
         node_ver = DEFAULT_BUILD_ARGS.get("NODE_VERSION", "20")
+        node_file = "package.json" if "package.json" in files else (".nvmrc" if ".nvmrc" in files else ".node-version")
         if ".nvmrc" in files or ".node-version" in files:
             nvm_file = ".nvmrc" if ".nvmrc" in files else ".node-version"
             try:
@@ -120,20 +123,16 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
         build_args["NODE_VERSION"] = node_ver
 
-        if "pnpm-lock.yaml" in files:
-            setup_scripts.append("pnpm install")
-        elif "yarn.lock" in files:
-            setup_scripts.append("yarn install")
-        elif "package.json" in files:
-            setup_scripts.append("npm install")
+        node_setup = "pnpm install" if "pnpm-lock.yaml" in files else ("yarn install" if "yarn.lock" in files else "npm install")
+        setup_scripts.append(node_setup)
+        print(f"  * Node.js: Found {node_file} -> extracted NODE_VERSION={node_ver} (setup: {node_setup})")
 
     # Rust
     if any(f in files for f in ("Cargo.toml", "rust-toolchain.toml", "rust-toolchain")):
         rust_ver = DEFAULT_BUILD_ARGS.get("RUST_VERSION", "stable")
         
-        # Check rust-toolchain.toml / rust-toolchain
-        toolchain_file = "rust-toolchain.toml" if "rust-toolchain.toml" in files else ("rust-toolchain" if "rust-toolchain" in files else None)
-        if toolchain_file:
+        toolchain_file = "rust-toolchain.toml" if "rust-toolchain.toml" in files else ("rust-toolchain" if "rust-toolchain" in files else "Cargo.toml")
+        if toolchain_file in ("rust-toolchain.toml", "rust-toolchain"):
             try:
                 with open(os.path.join(cwd, toolchain_file), "r", encoding="utf-8") as f:
                     content = f.read()
@@ -154,6 +153,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
         build_args["RUST_VERSION"] = rust_ver
         setup_scripts.append("cargo fetch")
+        print(f"  * Rust: Found {toolchain_file} -> extracted RUST_VERSION={rust_ver} (setup: cargo fetch)")
 
     # Go
     if "go.mod" in files:
@@ -168,10 +168,14 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
             pass
         build_args["GO_VERSION"] = go_ver
         setup_scripts.append("go mod download")
+        print(f"  * Go: Found go.mod -> extracted GO_VERSION={go_ver} (setup: go mod download)")
 
     # Mojo / Pixi
     if any(f in files for f in ("mojoproject.toml", "pixi.toml")) or any(f.endswith(".mojo") for f in files):
-        build_args["MOJO_VERSION"] = DEFAULT_BUILD_ARGS.get("MOJO_VERSION", "latest")
+        mojo_ver = DEFAULT_BUILD_ARGS.get("MOJO_VERSION", "latest")
+        build_args["MOJO_VERSION"] = mojo_ver
+        mojo_file = "mojoproject.toml" if "mojoproject.toml" in files else ("pixi.toml" if "pixi.toml" in files else "mojo source")
+        print(f"  * Mojo: Found {mojo_file} -> extracted MOJO_VERSION={mojo_ver}")
 
     # Makefile setup target detection
     if "Makefile" in files:
@@ -181,9 +185,11 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
                 if re.search(r"^setup:", content, flags=re.MULTILINE):
                     if "make setup" not in setup_scripts:
                         setup_scripts.append("make setup")
+                        print("  * Build: Found Makefile -> added 'make setup' to setup_scripts")
                 elif re.search(r"^init:", content, flags=re.MULTILINE):
                     if "make init" not in setup_scripts:
                         setup_scripts.append("make init")
+                        print("  * Build: Found Makefile -> added 'make init' to setup_scripts")
         except Exception:
             pass
 
@@ -191,6 +197,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
     if ".env.example" in files or ".env.template" in files:
         env_file = ".env.example" if ".env.example" in files else ".env.template"
         try:
+            added_count = 0
             with open(os.path.join(cwd, env_file), "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -200,6 +207,9 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
                             env_entry = f"{k}={v}"
                             if env_entry not in env_vars:
                                 env_vars.append(env_entry)
+                                added_count += 1
+            if added_count > 0:
+                print(f"  * Environment: Found {env_file} -> extracted {added_count} default variable(s)")
         except Exception:
             pass
 
