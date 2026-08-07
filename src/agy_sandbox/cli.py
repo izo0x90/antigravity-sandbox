@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
+from .cli_helpers import (
+    SmartArgumentParser,
+    find_best_match,
+    format_smart_error,
+    preprocess_unquoted_comma_args,
+)
 from .config import AgyConfig, load_config, save_config, write_default_config
 from .constants import (
     AGENT_AGY,
@@ -47,6 +53,10 @@ def parse_agent_list(raw_agents: Optional[List[str]]) -> List[str]:
         parts = [p.strip() for p in item.split(",")]
         for p in parts:
             if p and p not in agents:
+                if p not in AGENT_SPECS and not p.startswith(("git+", "http://", "https://", ".", "/")):
+                    closest = find_best_match(p, AGENT_SPECS.keys())
+                    hint = f" Did you mean '{closest}'?" if closest else f" Available agents: {', '.join(AGENT_SPECS.keys())}"
+                    print(f"⚠️  Warning: Unknown agent harness '{p}'.{hint}", file=sys.stderr)
                 agents.append(p)
     return agents
 
@@ -199,16 +209,16 @@ def agents_list_command(args: argparse.Namespace) -> None:
 def agents_add_command(args: argparse.Namespace) -> None:
     agent_name = args.name
     if agent_name not in AGENT_SPECS:
-        print(f"Error: Unknown agent '{agent_name}'.")
-        print("Available agents:")
-        for k, spec in AGENT_SPECS.items():
-            print(f"  * {k:<12} - {spec.display_name}")
+        closest = find_best_match(agent_name, AGENT_SPECS.keys())
+        hint = f"Did you mean '{closest}'?" if closest else f"Available agents: {', '.join(AGENT_SPECS.keys())}"
+        print(format_smart_error(f"Unknown agent harness '{agent_name}'.", hint), file=sys.stderr)
         sys.exit(1)
 
     try:
         config = load_config()
     except FileNotFoundError:
-        print(f"Error: Configuration file {DEFAULT_CONFIG_FILE} not found. Please run 'agy-sandbox init' first.")
+        hint = "Run 'agy-sandbox auto-init' to auto-detect project runtimes or 'agy-sandbox init' to build a template."
+        print(format_smart_error(f"Configuration file '{DEFAULT_CONFIG_FILE}' not found.", hint), file=sys.stderr)
         sys.exit(1)
 
     spec = AGENT_SPECS[agent_name]
@@ -226,7 +236,12 @@ def agents_add_command(args: argparse.Namespace) -> None:
 
 def up_command(args: argparse.Namespace) -> None:
     print("Running up command...")
-    config = load_config()
+    try:
+        config = load_config()
+    except FileNotFoundError:
+        hint = "Run 'agy-sandbox auto-init' to auto-detect project runtimes or 'agy-sandbox init' to build a template."
+        print(format_smart_error(f"Configuration file '{DEFAULT_CONFIG_FILE}' not found.", hint), file=sys.stderr)
+        sys.exit(1)
 
     if config.sbx.enabled and args.rebuild:
         if check_for_unsaved_sandbox_work(config.sandbox_name, config):
@@ -243,7 +258,12 @@ def up_command(args: argparse.Namespace) -> None:
 
 def down_command(args: argparse.Namespace) -> None:
     print("Running down command...")
-    config = load_config()
+    try:
+        config = load_config()
+    except FileNotFoundError:
+        hint = "Run 'agy-sandbox auto-init' to auto-detect project runtimes or 'agy-sandbox init' to build a template."
+        print(format_smart_error(f"Configuration file '{DEFAULT_CONFIG_FILE}' not found.", hint), file=sys.stderr)
+        sys.exit(1)
 
     if config.sbx.enabled:
         if check_for_unsaved_sandbox_work(config.sandbox_name, config):
@@ -283,18 +303,18 @@ def kits_add_command(args: argparse.Namespace) -> None:
     kit_name = args.name
     resolved = resolve_kit(kit_name)
     if not resolved:
-        print(f"Error: Unknown kit '{kit_name}'.")
-        kits = list_bundled_kits()
-        if kits:
-            print("Available kits are:")
-            for k in kits:
-                print(f"  * {k['name']}")
+        bundled = list_bundled_kits()
+        valid_names = [k["name"] for k in bundled] if bundled else []
+        closest = find_best_match(kit_name, valid_names) if valid_names else None
+        hint = f"Did you mean '{closest}'?" if closest else (f"Available kits: {', '.join(valid_names)}" if valid_names else None)
+        print(format_smart_error(f"Unknown mixin kit '{kit_name}'.", hint), file=sys.stderr)
         sys.exit(1)
 
     try:
         config = load_config()
     except FileNotFoundError:
-        print(f"Error: Configuration file {DEFAULT_CONFIG_FILE} not found. Please run 'agy-sandbox init' first.")
+        hint = "Run 'agy-sandbox auto-init' to auto-detect project runtimes or 'agy-sandbox init' to build a template."
+        print(format_smart_error(f"Configuration file '{DEFAULT_CONFIG_FILE}' not found.", hint), file=sys.stderr)
         sys.exit(1)
 
     config.sbx.enabled = True
@@ -311,14 +331,17 @@ def kits_add_command(args: argparse.Namespace) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Antigravity Sandbox CLI")
+    raw_argv = sys.argv[1:] if argv is None else argv
+    clean_argv = preprocess_unquoted_comma_args(raw_argv)
+
+    parser = SmartArgumentParser(description="Antigravity Sandbox CLI")
     parser.add_argument(
         "-v",
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command", required=True, parser_class=SmartArgumentParser)
 
     # init
     init_parser = subparsers.add_parser("init", help="Generate a template agy.yaml")
@@ -412,7 +435,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     kits_add_parser.add_argument("name", help="Name of the kit to add")
     kits_add_parser.set_defaults(func=kits_add_command)
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(clean_argv)
     try:
         args.func(args)
     except KeyboardInterrupt:
