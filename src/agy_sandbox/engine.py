@@ -29,10 +29,14 @@ def run_up_docker(config: AgyConfig, image_name: str) -> None:
 
 
 def run_up(config: AgyConfig, rebuild: bool = False) -> None:
-    image_name = build_project_image(config)
     if config.sbx.enabled:
+        if sandbox_exists(config.sandbox_name) and not rebuild:
+            run_up_sbx(config, image_name="", rebuild=False)
+            return
+        image_name = build_project_image(config)
         run_up_sbx(config, image_name, rebuild=rebuild)
     else:
+        image_name = build_project_image(config)
         run_up_docker(config, image_name)
 
 

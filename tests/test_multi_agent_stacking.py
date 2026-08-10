@@ -130,6 +130,21 @@ class TestMultiAgentStacking(unittest.TestCase):
 
             self.assertEqual(called_services, expected_services)
 
+    def test_run_up_bypasses_build_when_sandbox_exists(self):
+        from agy_sandbox.engine import run_up
+        config = AgyConfig(
+            project_name="my_existing_app",
+            agent="agy",
+            sbx=SbxConfig(enabled=True, agent="agy", kits=[]),
+        )
+        with patch("agy_sandbox.engine.sandbox_exists", return_value=True) as mock_exists, \
+             patch("agy_sandbox.engine.build_project_image") as mock_build, \
+             patch("agy_sandbox.engine.run_up_sbx") as mock_run_sbx:
+            run_up(config, rebuild=False)
+            mock_exists.assert_called_once_with(config.sandbox_name)
+            mock_build.assert_not_called()
+            mock_run_sbx.assert_called_once_with(config, image_name="", rebuild=False)
+
 
 if __name__ == "__main__":
     unittest.main()
