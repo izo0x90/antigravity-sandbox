@@ -168,7 +168,7 @@ class SbxRunner:
         if exists and not rebuild:
             print(f"Resuming existing sandbox container '{sandbox_name}'...")
             print("💡 Note: To rebuild with updated Docker image or kits, run with '--rebuild'.")
-            run_cmd = ["sbx", "run", "--name", sandbox_name, sbx_agent_arg]
+            run_cmd = ["sbx", "run", "--name", sandbox_name]
             print(f"Executing: {' '.join(run_cmd)}")
             res = subprocess.run(run_cmd)
             if res.returncode != 0:

@@ -93,7 +93,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
     "agy": AgentSpec(
         identifier="agy",
         display_name="Google Antigravity",
-        sbx_agent_arg="gemini",
+        sbx_agent_arg="agy",
         kit_ref=DEFAULT_SBX_KIT_URL,
         cli_binary="agy",
         read_only_args=("--add-dir", "{cwd}", "--mode", "plan", "--print", "{prompt}"),

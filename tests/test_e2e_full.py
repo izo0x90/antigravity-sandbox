@@ -102,7 +102,7 @@ class TestE2EFullSuite(unittest.TestCase):
     @patch("shutil.which", return_value="/usr/local/bin/sbx")
     def test_phase3_all_6_harnesses_lifecycle(self, mock_which, mock_run):
         harnesses = [
-            (AGENT_AGY, "gemini", ("google",), "/root/.gemini"),
+            (AGENT_AGY, "agy", ("google",), "/root/.gemini"),
             (AGENT_CLAUDE, "claude", ("anthropic",), "/home/agent/.claude.json"),
             (AGENT_OPENCODE, "opencode", ("openrouter", "anthropic", "openai", "google"), "/home/agent/.config/opencode/auth.json"),
             (AGENT_CODEX, "codex", ("openai",), "/home/agent/.codex/auth.json"),
