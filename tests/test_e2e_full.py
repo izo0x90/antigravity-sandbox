@@ -113,8 +113,8 @@ class TestE2EFullSuite(unittest.TestCase):
         for agent_id, expected_arg, expected_secrets, auth_guard_file in harnesses:
             with self.subTest(agent=agent_id):
                 mock_run.reset_mock()
-                # Mock sbx ls success
-                mock_run.return_value = MagicMock(returncode=0, stdout="NAME STATUS\n")
+                # Mock sbx daemon status & sbx ls success
+                mock_run.return_value = MagicMock(returncode=0, stdout="Status: running\nNAME STATUS\n")
 
                 config = AgyConfig.from_dict({
                     "project_name": "test_project",

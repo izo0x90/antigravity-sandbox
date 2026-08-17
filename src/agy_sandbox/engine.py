@@ -30,6 +30,7 @@ def run_up_docker(config: AgyConfig, image_name: str) -> None:
 
 def run_up(config: AgyConfig, rebuild: bool = False) -> None:
     if config.sbx.enabled:
+        SbxRunner.check_sbx_availability(config.agent)
         if sandbox_exists(config.sandbox_name) and not rebuild:
             run_up_sbx(config, image_name="", rebuild=False)
             return

@@ -1,3 +1,4 @@
+from typing import List
 import os
 import shutil
 import subprocess
@@ -14,15 +15,51 @@ from ..constants import (
 from ..kits import validate_and_resolve_kits
 
 
+def run_sbx_ls() -> str:
+    """
+    Executes 'sbx ls', streaming any interactive/auth output live to the terminal
+    while capturing the sandbox output table.
+    """
+    process = subprocess.Popen(
+        ["sbx", "ls"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    collected_lines: List[str] = []
+    header_found = False
+
+    if process.stdout:
+        for line in iter(process.stdout.readline, ""):
+            if "SANDBOX" in line and "AGENT" in line:
+                header_found = True
+
+            if not header_found:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+
+            collected_lines.append(line)
+        process.stdout.close()
+
+    returncode = process.wait()
+    if returncode != 0:
+        err_msg = "".join(collected_lines).strip()
+        raise RuntimeError(f"Failed to query Docker Sandboxes via 'sbx ls' (exit code {returncode}):\n{err_msg}")
+
+    return "".join(collected_lines)
+
+
 def sandbox_exists(sandbox_name: str) -> bool:
     try:
-        ls_output = subprocess.run(["sbx", "ls"], capture_output=True, text=True, check=True, timeout=DEFAULT_CMD_TIMEOUT).stdout
-        for line in ls_output.strip().splitlines()[1:]:
-            if line.strip() and line.split()[0] == sandbox_name:
+        ls_output = run_sbx_ls()
+        for line in ls_output.strip().splitlines():
+            parts = line.split()
+            if parts and parts[0] == sandbox_name:
                 return True
-    except (subprocess.SubprocessError, FileNotFoundError, IndexError, TimeoutError):
-        pass
-    return False
+        return False
+    except FileNotFoundError:
+        return False
 
 
 def get_local_image_id(image_name: str) -> str:
@@ -74,7 +111,7 @@ class SbxRunner:
     def check_sbx_availability(cls, required_agent: str = "agy") -> None:
         """
         Preflight check executed BEFORE any Docker image building or tarball exports.
-        Verifies that the sbx CLI binary is available on PATH and sandboxd is responding.
+        Verifies that the sbx CLI binary is available on PATH and sandboxd is actively running.
         """
         if not shutil.which("sbx"):
             print(
@@ -86,19 +123,25 @@ class SbxRunner:
             sys.exit(1)
 
         try:
-            res = subprocess.run(["sbx", "ls"], capture_output=True, text=True, timeout=DAEMON_PREFLIGHT_TIMEOUT)
-            if res.returncode != 0:
+            res = subprocess.run(
+                ["sbx", "daemon", "status"],
+                capture_output=True,
+                text=True,
+                timeout=DAEMON_PREFLIGHT_TIMEOUT,
+            )
+            if res.returncode != 0 or "running" not in res.stdout.lower():
+                details = res.stderr.strip() if res.stderr else res.stdout.strip()
                 print(
-                    f"❌ Error: Docker Sandboxes daemon ('sandboxd') is unreachable.\n"
-                    f"Details from sbx: {res.stderr.strip()}\n"
-                    f"Please ensure Docker Sandboxes is running.",
+                    f"❌ Error: Docker Sandboxes daemon ('sandboxd') is not running.\n"
+                    f"Details: {details}\n"
+                    f"Please ensure Docker Desktop is running or start the daemon with 'sbx daemon start'.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
         except (subprocess.SubprocessError, TimeoutError, OSError) as e:
             print(
                 f"❌ Error: Failed to communicate with Docker Sandboxes daemon: {e}\n"
-                f"Please ensure 'sandboxd' is running.",
+                f"Please ensure Docker Desktop and 'sandboxd' are running.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -209,6 +252,7 @@ class SbxRunner:
 
     @classmethod
     def stop_sandbox(cls, config: AgyConfig) -> None:
+        cls.check_sbx_availability(config.agent)
         sandbox_name = config.sandbox_name
         if not sandbox_exists(sandbox_name):
             print(f"Sandbox '{sandbox_name}' is not currently running or active.")
