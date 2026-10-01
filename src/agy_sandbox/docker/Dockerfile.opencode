@@ -1,0 +1,23 @@
+ARG BASE_IMAGE=agy-base:latest
+FROM ${BASE_IMAGE}
+
+ARG TARGETARCH
+
+# Install steps vendored from the official Docker Sandboxes kit:
+#   https://github.com/docker/sbx-kits-contrib/blob/c7a99a0b4b61a666661714e859609087c3880624/opencode/Dockerfile
+# Config, credentials and network policy come from kits/opencode/spec.yaml.
+# Upstream's base image ships Node; ours does not, so (like Dockerfile.prime) we
+# install a private Node.js 22 into /opt/harnesses/opencode/node.
+RUN NODE_ARCH=$(if [ "$TARGETARCH" = "arm64" ]; then echo "arm64"; else echo "x64"; fi) && \
+    mkdir -p /opt/harnesses/opencode/node && \
+    curl -fsSL "https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-${NODE_ARCH}.tar.xz" | tar -xJ --strip-components=1 -C /opt/harnesses/opencode/node
+
+ARG OPENCODE_VERSION=""
+RUN set -eux && \
+    export PATH="/opt/harnesses/opencode/node/bin:$PATH" && \
+    npm install -g "opencode-ai@${OPENCODE_VERSION:-latest}" --include=optional && \
+    npm cache clean --force && \
+    rm -rf /root/.npm && \
+    printf '#!/bin/sh\nexport PATH="/opt/harnesses/opencode/node/bin:$PATH"\nexec /opt/harnesses/opencode/node/bin/opencode "$@"\n' > /usr/local/bin/opencode && \
+    chmod +x /usr/local/bin/opencode && \
+    opencode --version

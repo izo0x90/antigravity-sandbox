@@ -236,8 +236,15 @@ class SbxRunner:
             f"{image_name}:latest",
         ]
 
-        if config.sbx.kits:
-            for kit_path in validate_and_resolve_kits(config.sbx.kits):
+        # The primary agent's kit carries its config/credentials (e.g. kits/claude), so
+        # always pass it even when agy.yaml only sets `agent:` and omits it from `kits`.
+        kits = list(config.sbx.kits)
+        primary_kit = config.agent_spec.kit_ref
+        if primary_kit and primary_kit not in kits:
+            kits.insert(0, primary_kit)
+
+        if kits:
+            for kit_path in validate_and_resolve_kits(kits):
                 run_cmd.extend(["--kit", kit_path])
 
         if config.sbx.clone:

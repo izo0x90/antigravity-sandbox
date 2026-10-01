@@ -1,0 +1,25 @@
+ARG BASE_IMAGE=agy-base:latest
+FROM ${BASE_IMAGE}
+
+# Install steps vendored from the official Docker Sandboxes kit:
+#   https://github.com/docker/sbx-kits-contrib/blob/c7a99a0b4b61a666661714e859609087c3880624/claude/Dockerfile
+# Config, credentials and network policy come from kits/claude/spec.yaml.
+USER agent
+WORKDIR /home/agent
+
+ARG CLAUDE_CODE_VERSION=""
+RUN set -eux && \
+    curl -fsSL https://claude.ai/install.sh | bash -s -- ${CLAUDE_CODE_VERSION} && \
+    claude --version && \
+    mkdir -p \
+      /home/agent/.claude/projects \
+      /home/agent/.claude/sessions \
+      /home/agent/.claude/todos \
+      /home/agent/.claude/shell-snapshots \
+      /home/agent/.claude/statsig
+
+ENV CLAUDE_ENV_FILE=/etc/sandbox-persistent.sh
+
+# Switch back to root user context by default so downstream Dockerfiles compile cleanly
+USER root
+WORKDIR /

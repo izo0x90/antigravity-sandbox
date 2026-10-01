@@ -10,11 +10,17 @@ DEFAULT_DOCKERFILE_NAME = "Dockerfile.default"
 BASE_DOCKERFILE_NAME = "Dockerfile.base"
 OMP_DOCKERFILE_NAME = "Dockerfile.omp"
 PRIME_DOCKERFILE_NAME = "Dockerfile.prime"
+CLAUDE_DOCKERFILE_NAME = "Dockerfile.claude"
+OPENCODE_DOCKERFILE_NAME = "Dockerfile.opencode"
+CODEX_DOCKERFILE_NAME = "Dockerfile.codex"
 
 # Image Tags
 DEFAULT_BASE_IMAGE = "agy-base:latest"
 OMP_BASE_IMAGE = "agy-base-omp:latest"
 PRIME_BASE_IMAGE = "agy-base-prime:latest"
+CLAUDE_BASE_IMAGE = "agy-base-claude:latest"
+OPENCODE_BASE_IMAGE = "agy-base-opencode:latest"
+CODEX_BASE_IMAGE = "agy-base-codex:latest"
 
 # Agent Targets
 AGENT_AGY = "agy"
@@ -90,15 +96,17 @@ class AgentSpec:
 
 
 # =============================================================================
-# TODO(REFACTOR REQUIRED): MULTI-AGENT SANDBOX SUPPORT IS A STOPGAP.
-# Native sbx agents (claude, opencode, codex) are NOT kits — sbx launches exactly
-# one of them via the positional agent arg, and `--kit claude` is rejected.
-# They have kit_ref="" so they are never passed as --kit. Consequence: a native
-# agent can only be the PRIMARY agent; listing one as an additional agent does
-# nothing. Real multi-agent sandboxes need a redesign (e.g. always launch
-# `shell` and install every harness via a real mixin kit). Any agent touching
-# agent/kit handling next should do that refactor instead of patching around it.
-# See https://github.com/docker/sbx-releases/issues/594
+# MULTI-AGENT SANDBOXES: HOW CLAUDE / OPENCODE / CODEX ARE WIRED
+# sbx's native agents (claude, opencode, codex) are full sandbox kits, and sbx
+# allows only one per sandbox (https://github.com/docker/sbx-releases/issues/594).
+# To install several harnesses side by side we do NOT use sbx's native agents:
+#   - kits/<agent>/spec.yaml is the official sbx kit spec vendored from
+#     docker/sbx-kits-contrib and converted to a mixin (config, creds, network)
+#   - docker/Dockerfile.<agent> installs the binary as a stacked base layer
+#   - sbx_agent_arg="shell", so the sandbox launches a shell and every harness
+#     is run from it
+# TODO(REFACTOR): agent/kit handling (AgentSpec, kits.py, cli.py) grew by
+# patching. Any agent touching it next should consolidate it around this model.
 # =============================================================================
 AGENT_SPECS: Dict[str, AgentSpec] = {
     "agy": AgentSpec(
@@ -116,9 +124,11 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
     "claude": AgentSpec(
         identifier="claude",
         display_name="Anthropic Claude Code",
-        sbx_agent_arg="claude",
-        kit_ref="",
+        sbx_agent_arg="shell",
+        kit_ref="claude",
         cli_binary="claude",
+        dockerfile_name=CLAUDE_DOCKERFILE_NAME,
+        base_image_tag=CLAUDE_BASE_IMAGE,
         read_only_args=("-p", "{prompt}"),
         sbx_secret_services=("anthropic",),
         signature_files=("CLAUDE.md", ".claude"),
@@ -128,9 +138,11 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
     "opencode": AgentSpec(
         identifier="opencode",
         display_name="OpenCode CLI",
-        sbx_agent_arg="opencode",
-        kit_ref="",
+        sbx_agent_arg="shell",
+        kit_ref="opencode",
         cli_binary="opencode",
+        dockerfile_name=OPENCODE_DOCKERFILE_NAME,
+        base_image_tag=OPENCODE_BASE_IMAGE,
         read_only_args=("run", "--agent", "plan", "{prompt}"),
         sbx_secret_services=("openrouter", "anthropic", "openai", "google"),
         signature_files=("opencode.json", ".opencode"),
@@ -140,9 +152,11 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
     "codex": AgentSpec(
         identifier="codex",
         display_name="OpenAI Codex CLI",
-        sbx_agent_arg="codex",
-        kit_ref="",
+        sbx_agent_arg="shell",
+        kit_ref="codex",
         cli_binary="codex",
+        dockerfile_name=CODEX_DOCKERFILE_NAME,
+        base_image_tag=CODEX_BASE_IMAGE,
         read_only_args=("exec", "{prompt}"),
         sbx_secret_services=("openai",),
         signature_files=(".codex",),

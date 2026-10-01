@@ -176,7 +176,7 @@ Done!"""
                 self.assertEqual(cfg.project_name, "auto-project")
                 self.assertEqual(cfg.sbx.agent, "opencode")
                 self.assertTrue(cfg.sbx.enabled)
-                self.assertNotIn("opencode", cfg.sbx.kits)
+                self.assertIn("opencode", cfg.sbx.kits)
                 self.assertIn("omp", cfg.sbx.kits)
                 self.assertIn("prime-agent", cfg.sbx.kits)
                 self.assertNotIn("claude", cfg.sbx.kits)

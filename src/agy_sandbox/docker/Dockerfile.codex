@@ -1,0 +1,24 @@
+ARG BASE_IMAGE=agy-base:latest
+FROM ${BASE_IMAGE}
+
+# Install steps vendored from the official Docker Sandboxes kit:
+#   https://github.com/docker/sbx-kits-contrib/blob/c7a99a0b4b61a666661714e859609087c3880624/codex/Dockerfile
+# Config, credentials and network policy come from kits/codex/spec.yaml.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends xdg-utils && \
+    rm -rf /var/lib/apt/lists/* && \
+    command -v xdg-open
+
+USER agent
+WORKDIR /home/agent
+
+# Upstream also symlinks codex into /usr/local/share/npm-global/bin (a path specific
+# to its base image); ~/.local/bin is already on PATH here, so that step is omitted.
+ENV CODEX_INSTALL_DIR=/home/agent/.local/bin
+RUN mkdir -p /home/agent/.codex && \
+    CODEX_NON_INTERACTIVE=true sh -c "$(curl -fsSL https://chatgpt.com/codex/install.sh)" && \
+    codex --version
+
+# Switch back to root user context by default so downstream Dockerfiles compile cleanly
+USER root
+WORKDIR /

@@ -226,9 +226,9 @@ def agents_add_command(args: argparse.Namespace) -> None:
     config.agent = agent_name
     config.sbx.agent = agent_name
     if not spec.kit_ref:
-        # Native sbx agent: no kit to add. See TODO(REFACTOR REQUIRED) above AGENT_SPECS in constants.py.
+        # Agent has no kit (e.g. `shell`): only set it as the primary agent.
         save_config(config)
-        print(f"Set native sbx agent '{agent_name}' as the primary agent in {DEFAULT_CONFIG_FILE} (no kit needed).")
+        print(f"Set '{agent_name}' as the primary agent in {DEFAULT_CONFIG_FILE} (no kit needed).")
     elif spec.kit_ref not in config.sbx.kits:
         config.sbx.kits.append(spec.kit_ref)
         save_config(config)

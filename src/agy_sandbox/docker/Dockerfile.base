@@ -51,9 +51,6 @@ RUN groupadd --gid 1000 agent \
 USER agent
 WORKDIR /home/agent
 
-# Pre-create agent-owned ~/.claude so the native sbx claude kit can write settings.json
-RUN mkdir -p /home/agent/.claude
-
 # Install Antigravity CLI as the agent user
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 

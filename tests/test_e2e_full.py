@@ -62,8 +62,8 @@ class TestE2EFullSuite(unittest.TestCase):
                 self.assertEqual(config.agent, "claude")
                 self.assertTrue(config.sbx.enabled)
                 self.assertTrue(config.sbx.clone)
-                self.assertNotIn("claude", config.sbx.kits)
-                self.assertNotIn("opencode", config.sbx.kits)
+                self.assertIn("claude", config.sbx.kits)
+                self.assertIn("opencode", config.sbx.kits)
                 self.assertIn("chrome-devtools", config.sbx.kits)
                 self.assertTrue(os.path.exists("Dockerfile.agy"))
 
@@ -71,9 +71,7 @@ class TestE2EFullSuite(unittest.TestCase):
                 ret = main(["agents", "add", "codex"])
                 self.assertEqual(ret, 0)
                 config = load_config("agy.yaml")
-                self.assertEqual(config.sbx.agent, "codex")
-                self.assertNotIn("codex", config.sbx.kits)
-                self.assertNotIn("", config.sbx.kits)
+                self.assertIn("codex", config.sbx.kits)
 
                 # 4. kits add
                 ret = main(["kits", "add", "omp"])
@@ -105,9 +103,9 @@ class TestE2EFullSuite(unittest.TestCase):
     def test_phase3_all_6_harnesses_lifecycle(self, mock_which, mock_run):
         harnesses = [
             (AGENT_AGY, "agy", ("google",), "/root/.gemini"),
-            (AGENT_CLAUDE, "claude", ("anthropic",), "/home/agent/.claude.json"),
-            (AGENT_OPENCODE, "opencode", ("openrouter", "anthropic", "openai", "google"), "/home/agent/.config/opencode/auth.json"),
-            (AGENT_CODEX, "codex", ("openai",), "/home/agent/.codex/auth.json"),
+            (AGENT_CLAUDE, "shell", ("anthropic",), "/home/agent/.claude.json"),
+            (AGENT_OPENCODE, "shell", ("openrouter", "anthropic", "openai", "google"), "/home/agent/.config/opencode/auth.json"),
+            (AGENT_CODEX, "shell", ("openai",), "/home/agent/.codex/auth.json"),
             (AGENT_OMP, "shell", (), "/home/agent/.omp"),
             (AGENT_SHELL, "shell", (), "/home/agent/.shell"),
         ]

@@ -87,8 +87,7 @@ def validate_and_resolve_kits(kits: List[str]) -> List[str]:
         if not kit or kit == ".":
             continue
 
-        # Native sbx agents (empty kit_ref) are launched via the agent arg, never as --kit.
-        # See TODO(REFACTOR REQUIRED) above AGENT_SPECS in constants.py.
+        # Agents with no kit (e.g. `shell`) are launched via the agent arg, never as --kit.
         if kit in AGENT_SPECS and not AGENT_SPECS[kit].kit_ref:
             continue
 

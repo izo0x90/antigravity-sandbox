@@ -24,16 +24,21 @@ commands:
           # 1. Install container-native snap-free Chromium on first startup (idempotent)
           if ! command -v chromium &>/dev/null && ! command -v chromium-browser &>/dev/null; then
             echo "-> Installing native Chromium (snap-free)..."
-            sudo apt-get update
-            sudo apt-get install -y curl gnupg
+            # Wait for the apt/dpkg locks: other kits (shell/claude/opencode/codex) run a background
+            # `apt-get update` at startup, and a lock clash would make this install fail.
+            # DPkg::Lock::Timeout covers installs; `update` (lists lock) needs the retry loop.
+            APT_GET="sudo apt-get -o DPkg::Lock::Timeout=300"
+            apt_update() { for _ in $(seq 1 150); do $APT_GET update && return 0; sleep 2; done; return 1; }
+            apt_update
+            $APT_GET install -y curl gnupg
             sudo rm -f /usr/share/keyrings/debian-archive-keyring.gpg /usr/share/keyrings/debian-security-archive-keyring.gpg
             sudo curl -fsSL https://ftp-master.debian.org/keys/archive-key-12.asc | sudo gpg --dearmor -o /usr/share/keyrings/debian-archive-keyring.gpg
             sudo curl -fsSL https://ftp-master.debian.org/keys/archive-key-12-security.asc | sudo gpg --dearmor -o /usr/share/keyrings/debian-security-archive-keyring.gpg
             sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] http://deb.debian.org/debian bookworm main" > /etc/apt/sources.list.d/debian-bookworm.list'
             sudo sh -c 'echo "deb [signed-by=/usr/share/keyrings/debian-security-archive-keyring.gpg] http://security.debian.org/debian-security bookworm-security main" >> /etc/apt/sources.list.d/debian-bookworm.list'
             sudo sh -c 'printf "Package: chromium* chromium-driver*\nPin: release n=bookworm\nPin-Priority: 700\n\nPackage: chromium* chromium-driver*\nPin: release n=bookworm-security\nPin-Priority: 700\n" > /etc/apt/preferences.d/chromium.pref'
-            sudo apt-get update
-            sudo apt-get install -y chromium fonts-liberation
+            apt_update
+            $APT_GET install -y chromium fonts-liberation
           else
             echo "-> Chromium is already installed."
           fi
@@ -56,6 +61,13 @@ commands:
               --no-sandbox \
               --disable-dev-shm-usage \
               --user-data-dir=/tmp/chrome-profile-stable > /tmp/chromium-headless.log 2>&1 &
+          fi
+
+          # Steps 3-5 need Node.js/npm from the project image (build_args.NODE_VERSION).
+          # Without it, skip them instead of failing kit startup (which aborts the sandbox).
+          if ! command -v npm &>/dev/null || ! command -v node &>/dev/null; then
+            echo "⚠️  Node.js/npm not found in image; skipping chrome-devtools-mcp install and MCP registration."
+            exit 0
           fi
 
           # 3. Install newest version of chrome-devtools-mcp globally (idempotent)
@@ -105,5 +117,13 @@ commands:
             fs.mkdirSync(path.dirname(ompPath), { recursive: true });
             fs.writeFileSync(ompPath, JSON.stringify(ompConfig, null, 2), "utf8");
           '
+
+          # 5. Register chrome-devtools MCP server with Claude Code, if installed (remove-then-add is idempotent)
+          export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
+          if command -v claude &>/dev/null; then
+            echo "-> Registering chrome-devtools MCP server with Claude Code..."
+            claude mcp remove --scope user chrome-devtools >/dev/null 2>&1 || true
+            claude mcp add --scope user chrome-devtools -- chrome-devtools-mcp --browser-url=http://127.0.0.1:9222 --no-usage-statistics || true
+          fi
       user: "1000"
       description: "Pre-spawn Chromium, configure chrome-devtools MCP server"
