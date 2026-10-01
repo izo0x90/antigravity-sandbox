@@ -12,6 +12,7 @@ from .constants import (
     DEFAULT_BUILD_ARGS,
     DEFAULT_CONFIG_FILE,
     DEFAULT_ENV_VARS,
+    DEFAULT_HOST_BROWSER_PORT,
     DEFAULT_SETUP_SCRIPTS,
     KIT_OMP,
     KIT_PRIME_AGENT,
@@ -20,11 +21,31 @@ from .naming import SandboxNamingResolver
 
 
 @dataclass
+class HostBrowserConfig:
+    enabled: bool = False
+    port: int = DEFAULT_HOST_BROWSER_PORT
+    headless: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Optional[dict]) -> "HostBrowserConfig":
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            port=int(data.get("port") or DEFAULT_HOST_BROWSER_PORT),
+            headless=bool(data.get("headless", False)),
+        )
+
+    def to_dict(self) -> dict:
+        return {"enabled": self.enabled, "port": self.port, "headless": self.headless}
+
+
+@dataclass
 class SbxConfig:
     enabled: bool = False
     agent: str = AGENT_AGY
     clone: bool = False
     kits: List[str] = field(default_factory=list)
+    host_browser: HostBrowserConfig = field(default_factory=HostBrowserConfig)
 
 
 @dataclass
@@ -137,6 +158,7 @@ class AgyConfig:
             agent=raw_agent,
             clone=sbx_dict.get("clone", False),
             kits=sbx_kits,
+            host_browser=HostBrowserConfig.from_dict(sbx_dict.get("host_browser")),
         )
         return cls(
             profile=data.get("profile") or "default",
@@ -179,6 +201,9 @@ def save_config(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> None:
             "kits": config.sbx.kits,
         },
     }
+    # Only persist host_browser once it differs from the defaults, to keep generated configs minimal
+    if config.sbx.host_browser != HostBrowserConfig():
+        data["sbx"]["host_browser"] = config.sbx.host_browser.to_dict()
     if config.workspace_path is not None:
         data["workspace_path"] = config.workspace_path
 

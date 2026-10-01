@@ -34,7 +34,11 @@ AGENT_PRIME_AGENT = "prime-agent"
 # Kit Names & Remote URLs
 KIT_OMP = "omp"
 KIT_PRIME_AGENT = "prime-agent"
+KIT_CHROME_DEVTOOLS = "chrome-devtools"
+KIT_CHROME_HOST = "chrome-host"
 DEFAULT_SBX_KIT_URL = "git+https://github.com/shelajev/agy-sbx-kit.git"
+# AGY as an add-on next to another primary agent (the repo root is a full sandbox kit)
+AGY_MIXIN_KIT_URL = f"{DEFAULT_SBX_KIT_URL}#dir=agy-mixin"
 REMOTE_KIT_SCHEMES = ("git+", "git@", "https://", "http://", "oci://")
 
 # Container Paths & Mount Points
@@ -42,9 +46,17 @@ CONTAINER_GEMINI_HOME = "/root/.gemini"
 CONTAINER_GEMINI_CONFIG = "/root/.config/gemini"
 CONTAINER_KEYRINGS = "/root/.local/share/keyrings"
 
+# Host Browser (Chrome on the host, driven from the sandbox via kits/chrome-host)
+DEFAULT_HOST_BROWSER_PORT = 9222
+HOST_BROWSER_STATE_DIR = "~/.agy-sandbox/host-browser"
+HOST_BROWSER_STARTUP_TIMEOUT = 15
+HOST_BROWSER_ENV_MARKER = "CHROME_DEVTOOLS_HOST_BROWSER"
+
 # Execution Timeouts & Limits
 DEFAULT_CMD_TIMEOUT = 10
 REMOVE_CMD_TIMEOUT = 15
+# `sbx exec` starts a stopped sandbox first, which runs every kit's startup commands
+SANDBOX_EXEC_TIMEOUT = 300
 DAEMON_PREFLIGHT_TIMEOUT = 5
 SHORT_IMAGE_ID_LEN = 12
 BANNER_WIDTH = 78
@@ -112,7 +124,8 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
     "agy": AgentSpec(
         identifier="agy",
         display_name="Google Antigravity",
-        sbx_agent_arg="agy",
+        # Current sbx takes a full sandbox kit as the positional agent, not via --kit
+        sbx_agent_arg=DEFAULT_SBX_KIT_URL,
         kit_ref=DEFAULT_SBX_KIT_URL,
         cli_binary="agy",
         read_only_args=("--add-dir", "{cwd}", "--mode", "plan", "--print", "{prompt}"),

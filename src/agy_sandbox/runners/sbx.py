@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Sequence
 import os
 import shutil
 import subprocess
@@ -7,9 +7,13 @@ import tempfile
 
 from ..config import AgyConfig
 from ..constants import (
+    AGENT_AGY,
+    AGY_MIXIN_KIT_URL,
     DAEMON_PREFLIGHT_TIMEOUT,
     DEFAULT_CMD_TIMEOUT,
+    DEFAULT_SBX_KIT_URL,
     REMOVE_CMD_TIMEOUT,
+    SANDBOX_EXEC_TIMEOUT,
     SHORT_IMAGE_ID_LEN,
 )
 from ..kits import validate_and_resolve_kits
@@ -60,6 +64,37 @@ def sandbox_exists(sandbox_name: str) -> bool:
         return False
     except FileNotFoundError:
         return False
+
+
+def sandbox_has_env(sandbox_name: str, var_name: str) -> bool:
+    """True if the variable is set inside the sandbox (kits declare their environment at creation)."""
+    try:
+        res = subprocess.run(
+            ["sbx", "exec", sandbox_name, "printenv", var_name],
+            capture_output=True,
+            timeout=SANDBOX_EXEC_TIMEOUT,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+    return res.returncode == 0
+
+
+def resolve_run_kits(config: AgyConfig, extra_kits: Sequence[str] = ()) -> List[str]:
+    """Resolves the kits to pass to `sbx run` for a new sandbox."""
+    kits = list(config.sbx.kits)
+    # The primary agent's kit carries its config/credentials (e.g. kits/claude), so
+    # always pass it even when agy.yaml only sets `agent:` and omits it from `kits`.
+    primary_kit = config.agent_spec.kit_ref
+    if primary_kit and primary_kit not in kits:
+        kits.insert(0, primary_kit)
+    kits.extend(k for k in extra_kits if k not in kits)
+
+    # A primary agent launched from a full sandbox kit (AGY) passes it as the agent, not as --kit.
+    resolved = [k for k in validate_and_resolve_kits(kits) if k != config.agent_spec.sbx_agent_arg]
+    if config.agent_spec.identifier != AGENT_AGY:
+        # The AGY repo root is a full sandbox kit; next to another primary agent use its mixin.
+        resolved = [AGY_MIXIN_KIT_URL if k == DEFAULT_SBX_KIT_URL else k for k in resolved]
+    return resolved
 
 
 def get_local_image_id(image_name: str) -> str:
@@ -196,7 +231,14 @@ class SbxRunner:
                 pass
 
     @classmethod
-    def run_sandbox(cls, config: AgyConfig, image_name: str, rebuild: bool = False) -> None:
+    def run_sandbox(
+        cls,
+        config: AgyConfig,
+        image_name: str,
+        rebuild: bool = False,
+        extra_kits: Sequence[str] = (),
+        kit_args: Sequence[str] = (),
+    ) -> None:
         cls.check_sbx_availability(config.agent)
         cls.ensure_secret_configured(config)
 
@@ -236,16 +278,10 @@ class SbxRunner:
             f"{image_name}:latest",
         ]
 
-        # The primary agent's kit carries its config/credentials (e.g. kits/claude), so
-        # always pass it even when agy.yaml only sets `agent:` and omits it from `kits`.
-        kits = list(config.sbx.kits)
-        primary_kit = config.agent_spec.kit_ref
-        if primary_kit and primary_kit not in kits:
-            kits.insert(0, primary_kit)
-
-        if kits:
-            for kit_path in validate_and_resolve_kits(kits):
-                run_cmd.extend(["--kit", kit_path])
+        for kit_path in resolve_run_kits(config, extra_kits):
+            run_cmd.extend(["--kit", kit_path])
+        for arg in kit_args:
+            run_cmd.extend(["--kit-arg", arg])
 
         if config.sbx.clone:
             run_cmd.append("--clone")

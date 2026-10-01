@@ -75,7 +75,8 @@ agy-sandbox auto-init --analyzer claude --agent opencode,prime-agent
 
 - `agy-sandbox up`  
   Launches or resumes the sandbox microVM and attaches to the agent session.  
-  Use `--rebuild` to force rebuild custom images or template stores.
+  Use `--rebuild` to force rebuild custom images or template stores.  
+  Use `--host-browser` to start Chrome on the host and let sandboxed agents drive it instead of the in-sandbox Chromium (requires the `chrome-devtools` kit; see [Host Browser](#host-browser)).
 
 - `agy-sandbox down`  
   Stops and removes the sandbox container for the current project. Scans for unsaved git changes or active TUI logins before destroying.
@@ -141,6 +142,24 @@ sbx:
 - **`omp`**: Terminal AI coding agent and tool harness (Oh My Pi). Pre-baked into stacked `agy-base-omp:latest`.
 - **`prime-agent`**: Self-improving RLM coding and research agent harness by Prime Intellect. Pre-baked into stacked `agy-base-prime:latest` with Node.js 22.
 - **`mojo-stdlib`**: Installs Bazelisk/Bazel launcher and LLVM `lit` test runner for compiling and testing `modularml/mojo`.
+- **`chrome-host`**: Added automatically by `up --host-browser`; relays `127.0.0.1:9222` in the sandbox to the host Chrome.
+
+### Host Browser
+
+`agy-sandbox up --host-browser` starts Chrome on the host (or reuses one already listening on the port) with a dedicated
+profile under `~/.agy-sandbox/host-browser/<sandbox>/`, and adds the `chrome-host` kit. Inside the sandbox a relay serves
+the host Chrome on `127.0.0.1:9222`, so every harness (Claude, AGY, OMP, ...) uses the same address as with the
+in-sandbox Chromium. `agy-sandbox down` stops a browser it started. To enable it by default:
+
+```yaml
+sbx:
+  host_browser:
+    enabled: true
+    port: 9222      # remote debugging port on the host
+    headless: false
+```
+
+Kits are fixed when a sandbox is created, so switching an existing sandbox to the host browser needs `--rebuild`.
 
 ## 🛡️ Code Guardian & Session Safeguards
 

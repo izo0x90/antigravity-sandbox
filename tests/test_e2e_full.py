@@ -6,7 +6,15 @@ from unittest.mock import MagicMock, patch
 
 from agy_sandbox.cli import main
 from agy_sandbox.config import AgyConfig, load_config
-from agy_sandbox.constants import AGENT_AGY, AGENT_CLAUDE, AGENT_CODEX, AGENT_OMP, AGENT_OPENCODE, AGENT_SHELL
+from agy_sandbox.constants import (
+    AGENT_AGY,
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    AGENT_OMP,
+    AGENT_OPENCODE,
+    AGENT_SHELL,
+    DEFAULT_SBX_KIT_URL,
+)
 from agy_sandbox.git_guardian import check_for_unsaved_sandbox_work
 from agy_sandbox.runners.docker import DockerRunner
 from agy_sandbox.runners.sbx import SbxRunner
@@ -102,7 +110,7 @@ class TestE2EFullSuite(unittest.TestCase):
     @patch("shutil.which", return_value="/usr/local/bin/sbx")
     def test_phase3_all_6_harnesses_lifecycle(self, mock_which, mock_run):
         harnesses = [
-            (AGENT_AGY, "agy", ("google",), "/root/.gemini"),
+            (AGENT_AGY, DEFAULT_SBX_KIT_URL, ("google",), "/root/.gemini"),
             (AGENT_CLAUDE, "shell", ("anthropic",), "/home/agent/.claude.json"),
             (AGENT_OPENCODE, "shell", ("openrouter", "anthropic", "openai", "google"), "/home/agent/.config/opencode/auth.json"),
             (AGENT_CODEX, "shell", ("openai",), "/home/agent/.codex/auth.json"),

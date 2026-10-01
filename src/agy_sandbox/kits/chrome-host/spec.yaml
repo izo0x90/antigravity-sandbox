@@ -1,0 +1,33 @@
+schemaVersion: "2"
+kind: mixin
+name: chrome-host
+displayName: Host Chrome Browser
+description: Lets agents drive a Chrome on the host (started by `agy-sandbox up --host-browser`) through a CDP relay on 127.0.0.1:9222.
+
+args:
+  host_port:
+    default: "9222"
+    description: Remote debugging port of the Chrome running on the host
+    pattern: '^[0-9]{1,5}$'
+
+permissions:
+  network:
+    allow:
+      # sbx's proxy matches requests to host.docker.internal as localhost
+      - "localhost:${{ kit.args.host_port }}"
+
+environment:
+  variables:
+    # Read by the chrome-devtools kit to skip its in-sandbox Chromium
+    CHROME_DEVTOOLS_HOST_BROWSER: "1"
+
+setup:
+  startup:
+    - command:
+        - python3
+        - /home/agent/.local/share/agy-sandbox/chrome_host_relay.py
+        - --host-port
+        - "${{ kit.args.host_port }}"
+      user: "1000"
+      background: true
+      description: Relay 127.0.0.1:9222 to the host Chrome through the sandbox proxy

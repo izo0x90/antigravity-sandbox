@@ -257,6 +257,9 @@ def up_command(args: argparse.Namespace) -> None:
                 print("\n❌ Operation aborted. Your uncommitted/unpushed code has been protected! Stay safe, homie!")
                 sys.exit(1)
 
+    if args.host_browser:
+        config.sbx.host_browser.enabled = True
+
     run_up(config, rebuild=args.rebuild)
 
 
@@ -398,6 +401,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     up_parser = subparsers.add_parser("up", help="Start the sandbox container")
     up_parser.add_argument(
         "--rebuild", action="store_true", help="Force rebuild of custom template/image and sandbox"
+    )
+    up_parser.add_argument(
+        "--host-browser",
+        action="store_true",
+        help="Start Chrome on the host and let sandboxed agents drive it (overrides sbx.host_browser.enabled)",
     )
     up_parser.set_defaults(func=up_command)
 

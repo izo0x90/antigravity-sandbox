@@ -21,8 +21,14 @@ commands:
         - "bash"
         - "-c"
         - |
+          # Host-browser mode: kits/chrome-host relays a Chrome on the host to 127.0.0.1:9222,
+          # so the in-sandbox Chromium (steps 1-2) is skipped. Steps 3-5 are identical in both modes.
+          HOST_BROWSER_MODE="${CHROME_DEVTOOLS_HOST_BROWSER:-0}"
+
           # 1. Install container-native snap-free Chromium on first startup (idempotent)
-          if ! command -v chromium &>/dev/null && ! command -v chromium-browser &>/dev/null; then
+          if [ "$HOST_BROWSER_MODE" = "1" ]; then
+            echo "-> Host browser mode: using the host Chrome relayed to 127.0.0.1:9222."
+          elif ! command -v chromium &>/dev/null && ! command -v chromium-browser &>/dev/null; then
             echo "-> Installing native Chromium (snap-free)..."
             # Wait for the apt/dpkg locks: other kits (shell/claude/opencode/codex) run a background
             # `apt-get update` at startup, and a lock clash would make this install fail.
@@ -43,15 +49,15 @@ commands:
             echo "-> Chromium is already installed."
           fi
 
-          # 2. Start container-native headless Chromium
-          echo "-> Starting headless Chromium on port 9222..."
-          if command -v chromium &>/dev/null; then
+          # 2. Start container-native headless Chromium (port 9222 belongs to the relay in host-browser mode)
+          if [ "$HOST_BROWSER_MODE" != "1" ] && command -v chromium &>/dev/null; then
             CHROMIUM_BIN=chromium
-          elif command -v chromium-browser &>/dev/null; then
+          elif [ "$HOST_BROWSER_MODE" != "1" ] && command -v chromium-browser &>/dev/null; then
             CHROMIUM_BIN=chromium-browser
           fi
-          
+
           if [ ! -z "$CHROMIUM_BIN" ]; then
+            echo "-> Starting headless Chromium on port 9222..."
             rm -f /tmp/chrome-profile-stable/SingletonLock
             $CHROMIUM_BIN \
               --headless \
