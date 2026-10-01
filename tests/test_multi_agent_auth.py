@@ -23,7 +23,7 @@ class TestMultiAgentAuth(unittest.TestCase):
         
         claude_spec = AGENT_SPECS["claude"]
         self.assertEqual(claude_spec.sbx_agent_arg, "claude")
-        self.assertEqual(claude_spec.kit_ref, "claude")
+        self.assertEqual(claude_spec.kit_ref, "")
         self.assertEqual(claude_spec.profile_dir_name, ".claude")
         self.assertIn(".claude.json", claude_spec.auth_session_files)
 
@@ -58,8 +58,8 @@ class TestMultiAgentAuth(unittest.TestCase):
             config = load_config(config_path)
             self.assertEqual(config.agent, "claude")
             self.assertTrue(config.sbx.enabled)
-            self.assertIn("claude", config.sbx.kits)
-            self.assertIn("opencode", config.sbx.kits)
+            self.assertNotIn("claude", config.sbx.kits)
+            self.assertNotIn("opencode", config.sbx.kits)
             self.assertIn("chrome-devtools", config.sbx.kits)
 
     def test_config_from_dict_null_handling(self):
@@ -99,7 +99,7 @@ class TestMultiAgentAuth(unittest.TestCase):
 
     def test_validate_and_resolve_kits_fail_fast(self):
         resolved = validate_and_resolve_kits(["claude", "chrome-devtools", "."])
-        self.assertIn("claude", resolved)
+        self.assertNotIn("claude", resolved)
         self.assertNotIn(".", resolved)
 
         with self.assertRaises(ValueError):

@@ -1,6 +1,6 @@
 [project]
 name = "antigravity-sandbox"
-version = "0.2.6"
+version = "0.2.7"
 description = "A Terraform-ish sandboxing wrapper for the Antigravity CLI"
 authors = [
     { name = "Antigravity", email = "antigravity@example.com" }

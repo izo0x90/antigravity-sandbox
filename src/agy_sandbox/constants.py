@@ -89,6 +89,17 @@ class AgentSpec:
         return [self.cli_binary] + [arg.format(prompt=prompt, cwd=cwd) for arg in self.read_only_args]
 
 
+# =============================================================================
+# TODO(REFACTOR REQUIRED): MULTI-AGENT SANDBOX SUPPORT IS A STOPGAP.
+# Native sbx agents (claude, opencode, codex) are NOT kits — sbx launches exactly
+# one of them via the positional agent arg, and `--kit claude` is rejected.
+# They have kit_ref="" so they are never passed as --kit. Consequence: a native
+# agent can only be the PRIMARY agent; listing one as an additional agent does
+# nothing. Real multi-agent sandboxes need a redesign (e.g. always launch
+# `shell` and install every harness via a real mixin kit). Any agent touching
+# agent/kit handling next should do that refactor instead of patching around it.
+# See https://github.com/docker/sbx-releases/issues/594
+# =============================================================================
 AGENT_SPECS: Dict[str, AgentSpec] = {
     "agy": AgentSpec(
         identifier="agy",
@@ -106,7 +117,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier="claude",
         display_name="Anthropic Claude Code",
         sbx_agent_arg="claude",
-        kit_ref="claude",
+        kit_ref="",
         cli_binary="claude",
         read_only_args=("-p", "{prompt}"),
         sbx_secret_services=("anthropic",),
@@ -118,7 +129,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier="opencode",
         display_name="OpenCode CLI",
         sbx_agent_arg="opencode",
-        kit_ref="opencode",
+        kit_ref="",
         cli_binary="opencode",
         read_only_args=("run", "--agent", "plan", "{prompt}"),
         sbx_secret_services=("openrouter", "anthropic", "openai", "google"),
@@ -130,7 +141,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier="codex",
         display_name="OpenAI Codex CLI",
         sbx_agent_arg="codex",
-        kit_ref="codex",
+        kit_ref="",
         cli_binary="codex",
         read_only_args=("exec", "{prompt}"),
         sbx_secret_services=("openai",),

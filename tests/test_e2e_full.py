@@ -62,8 +62,8 @@ class TestE2EFullSuite(unittest.TestCase):
                 self.assertEqual(config.agent, "claude")
                 self.assertTrue(config.sbx.enabled)
                 self.assertTrue(config.sbx.clone)
-                self.assertIn("claude", config.sbx.kits)
-                self.assertIn("opencode", config.sbx.kits)
+                self.assertNotIn("claude", config.sbx.kits)
+                self.assertNotIn("opencode", config.sbx.kits)
                 self.assertIn("chrome-devtools", config.sbx.kits)
                 self.assertTrue(os.path.exists("Dockerfile.agy"))
 
@@ -71,7 +71,9 @@ class TestE2EFullSuite(unittest.TestCase):
                 ret = main(["agents", "add", "codex"])
                 self.assertEqual(ret, 0)
                 config = load_config("agy.yaml")
-                self.assertIn("codex", config.sbx.kits)
+                self.assertEqual(config.sbx.agent, "codex")
+                self.assertNotIn("codex", config.sbx.kits)
+                self.assertNotIn("", config.sbx.kits)
 
                 # 4. kits add
                 ret = main(["kits", "add", "omp"])
