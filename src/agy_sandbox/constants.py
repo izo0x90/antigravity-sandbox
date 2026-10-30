@@ -1,248 +1,64 @@
 import re
-import shutil
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
-# File & Directory Names
+# Files
 DEFAULT_CONFIG_FILE = "agy.yaml"
 LOCAL_DOCKERFILE_NAME = "Dockerfile.agy"
 DEFAULT_DOCKERFILE_NAME = "Dockerfile.default"
 BASE_DOCKERFILE_NAME = "Dockerfile.base"
-OMP_DOCKERFILE_NAME = "Dockerfile.omp"
-PRIME_DOCKERFILE_NAME = "Dockerfile.prime"
-CLAUDE_DOCKERFILE_NAME = "Dockerfile.claude"
-OPENCODE_DOCKERFILE_NAME = "Dockerfile.opencode"
-CODEX_DOCKERFILE_NAME = "Dockerfile.codex"
-
-# Image Tags
 DEFAULT_BASE_IMAGE = "agy-base:latest"
-OMP_BASE_IMAGE = "agy-base-omp:latest"
-PRIME_BASE_IMAGE = "agy-base-prime:latest"
-CLAUDE_BASE_IMAGE = "agy-base-claude:latest"
-OPENCODE_BASE_IMAGE = "agy-base-opencode:latest"
-CODEX_BASE_IMAGE = "agy-base-codex:latest"
 
-# Agent Targets
-AGENT_AGY = "agy"
-AGENT_CLAUDE = "claude"
-AGENT_OPENCODE = "opencode"
-AGENT_CODEX = "codex"
-AGENT_SHELL = "shell"
-AGENT_OMP = "omp"
-AGENT_PRIME_AGENT = "prime-agent"
+# Host-side state (host browser profiles, generated per-project kits)
+STATE_DIR = "~/.agy-sandbox"
 
-# Kit Names & Remote URLs
-KIT_OMP = "omp"
-KIT_PRIME_AGENT = "prime-agent"
+# Login modes. These are sbx's own terms: a sandbox-local login is held by the
+# agent inside the VM; a proxy-managed one lives in `sbx secret` on the host and
+# the sandbox proxy injects it on outbound requests.
+AUTH_MODE_SANDBOX_LOCAL = "sandbox-local"
+AUTH_MODE_PROXY_MANAGED = "proxy-managed"
+AUTH_MODES = (AUTH_MODE_SANDBOX_LOCAL, AUTH_MODE_PROXY_MANAGED)
+LEGACY_AUTH_MODES = {
+    "sbx_persistent": AUTH_MODE_SANDBOX_LOCAL,
+    "sbx_proxy": AUTH_MODE_PROXY_MANAGED,
+}
+# The kit argument every bundled agent kit that cares about login mode declares.
+AUTH_MODE_KIT_ARG = "auth_mode"
+# A bundled kit `<name>-proxy` holds the proxy credential declaration for kit
+# `<name>` and is attached only in proxy-managed mode.
+PROXY_KIT_SUFFIX = "-proxy"
+
+# sbx launches every sandbox as a plain shell; agents are mixin kits on top.
+SBX_AGENT = "shell"
+
+# Bundled kit names referenced by code
 KIT_CHROME_DEVTOOLS = "chrome-devtools"
 KIT_CHROME_HOST = "chrome-host"
-DEFAULT_SBX_KIT_URL = "git+https://github.com/shelajev/agy-sbx-kit.git"
-# AGY as an add-on next to another primary agent (the repo root is a full sandbox kit)
-AGY_MIXIN_KIT_URL = f"{DEFAULT_SBX_KIT_URL}#dir=agy-mixin"
+PROJECT_KIT_NAME = "project-setup"
 REMOTE_KIT_SCHEMES = ("git+", "git@", "https://", "http://", "oci://")
 
-# Container Paths & Mount Points
-CONTAINER_GEMINI_HOME = "/root/.gemini"
-CONTAINER_GEMINI_CONFIG = "/root/.config/gemini"
-CONTAINER_KEYRINGS = "/root/.local/share/keyrings"
-
-# Host Browser (Chrome on the host, driven from the sandbox via kits/chrome-host)
+# Host browser (Chrome on the host, driven from the sandbox via kits/chrome-host)
 DEFAULT_HOST_BROWSER_PORT = 9222
-HOST_BROWSER_STATE_DIR = "~/.agy-sandbox/host-browser"
+HOST_BROWSER_STATE_DIR = f"{STATE_DIR}/host-browser"
 HOST_BROWSER_STARTUP_TIMEOUT = 15
-HOST_BROWSER_ENV_MARKER = "CHROME_DEVTOOLS_HOST_BROWSER"
 
-# Execution Timeouts & Limits
+# Timeouts (seconds)
 DEFAULT_CMD_TIMEOUT = 10
 REMOVE_CMD_TIMEOUT = 15
-# `sbx exec` starts a stopped sandbox first, which runs every kit's startup commands
+# `sbx exec` starts a stopped sandbox first, which runs every kit's startup hooks
 SANDBOX_EXEC_TIMEOUT = 300
 DAEMON_PREFLIGHT_TIMEOUT = 5
-SHORT_IMAGE_ID_LEN = 12
 BANNER_WIDTH = 78
 EXIT_CODE_INTERRUPTED = 130
 
-# Default Config Specifications
+# Default config values
 SUPPORTED_BUILD_ARGS = ("PYTHON_VERSION", "NODE_VERSION", "RUST_VERSION", "MOJO_VERSION")
-DEFAULT_BUILD_ARGS = {}
-DEFAULT_SETUP_SCRIPTS = []
+DEFAULT_BUILD_ARGS: dict = {}
+DEFAULT_SETUP_SCRIPTS: list = []
 DEFAULT_ENV_VARS = ["ENVIRONMENT=development"]
-
-# Terminal Support Defaults
-DEFAULT_TERM = "xterm-256color"
-DEFAULT_COLORTERM = "truecolor"
-SUPPORTED_TERMINALS = {
-    "xterm",
-    "xterm-color",
-    "xterm-256color",
-    "screen",
-    "screen-256color",
-    "tmux",
-    "tmux-256color",
-    "xterm-kitty",
-    "alacritty",
-    "ghostty",
-    "wezterm",
-}
-
-
-@dataclass(frozen=True)
-class AgentSpec:
-    identifier: str
-    display_name: str
-    sbx_agent_arg: str
-    kit_ref: str
-    cli_binary: str = ""
-    dockerfile_name: str = ""
-    base_image_tag: str = ""
-    read_only_args: Tuple[str, ...] = ("-p", "{prompt}")
-    sbx_secret_services: Tuple[str, ...] = ()
-    signature_files: Tuple[str, ...] = ()
-    auth_session_files: Tuple[str, ...] = ()
-    profile_dir_name: str = ".gemini"
-
-    def get_read_only_cmd(self, prompt: str, cwd: str) -> List[str]:
-        if not self.cli_binary or not self.read_only_args:
-            return []
-        return [self.cli_binary] + [arg.format(prompt=prompt, cwd=cwd) for arg in self.read_only_args]
-
-
-# =============================================================================
-# MULTI-AGENT SANDBOXES: HOW CLAUDE / OPENCODE / CODEX ARE WIRED
-# sbx's native agents (claude, opencode, codex) are full sandbox kits, and sbx
-# allows only one per sandbox (https://github.com/docker/sbx-releases/issues/594).
-# To install several harnesses side by side we do NOT use sbx's native agents:
-#   - kits/<agent>/spec.yaml is the official sbx kit spec vendored from
-#     docker/sbx-kits-contrib and converted to a mixin (config, creds, network)
-#   - docker/Dockerfile.<agent> installs the binary as a stacked base layer
-#   - sbx_agent_arg="shell", so the sandbox launches a shell and every harness
-#     is run from it
-# TODO(REFACTOR): agent/kit handling (AgentSpec, kits.py, cli.py) grew by
-# patching. Any agent touching it next should consolidate it around this model.
-# =============================================================================
-AGENT_SPECS: Dict[str, AgentSpec] = {
-    "agy": AgentSpec(
-        identifier="agy",
-        display_name="Google Antigravity",
-        # Current sbx takes a full sandbox kit as the positional agent, not via --kit
-        sbx_agent_arg=DEFAULT_SBX_KIT_URL,
-        kit_ref=DEFAULT_SBX_KIT_URL,
-        cli_binary="agy",
-        read_only_args=("--add-dir", "{cwd}", "--mode", "plan", "--print", "{prompt}"),
-        sbx_secret_services=("google",),
-        signature_files=("antigravity.yaml",),
-        auth_session_files=(".gemini",),
-        profile_dir_name=".gemini",
-    ),
-    "claude": AgentSpec(
-        identifier="claude",
-        display_name="Anthropic Claude Code",
-        sbx_agent_arg="shell",
-        kit_ref="claude",
-        cli_binary="claude",
-        dockerfile_name=CLAUDE_DOCKERFILE_NAME,
-        base_image_tag=CLAUDE_BASE_IMAGE,
-        read_only_args=("-p", "{prompt}"),
-        sbx_secret_services=("anthropic",),
-        signature_files=("CLAUDE.md", ".claude"),
-        auth_session_files=(".claude.json", ".claude"),
-        profile_dir_name=".claude",
-    ),
-    "opencode": AgentSpec(
-        identifier="opencode",
-        display_name="OpenCode CLI",
-        sbx_agent_arg="shell",
-        kit_ref="opencode",
-        cli_binary="opencode",
-        dockerfile_name=OPENCODE_DOCKERFILE_NAME,
-        base_image_tag=OPENCODE_BASE_IMAGE,
-        read_only_args=("run", "--agent", "plan", "{prompt}"),
-        sbx_secret_services=("openrouter", "anthropic", "openai", "google"),
-        signature_files=("opencode.json", ".opencode"),
-        auth_session_files=(".config/opencode/auth.json", ".opencode"),
-        profile_dir_name=".opencode",
-    ),
-    "codex": AgentSpec(
-        identifier="codex",
-        display_name="OpenAI Codex CLI",
-        sbx_agent_arg="shell",
-        kit_ref="codex",
-        cli_binary="codex",
-        dockerfile_name=CODEX_DOCKERFILE_NAME,
-        base_image_tag=CODEX_BASE_IMAGE,
-        read_only_args=("exec", "{prompt}"),
-        sbx_secret_services=("openai",),
-        signature_files=(".codex",),
-        auth_session_files=(".codex/auth.json", ".codex"),
-        profile_dir_name=".codex",
-    ),
-    "omp": AgentSpec(
-        identifier="omp",
-        display_name="Oh My Pi Harness",
-        sbx_agent_arg="shell",
-        kit_ref="omp",
-        cli_binary="omp",
-        dockerfile_name=OMP_DOCKERFILE_NAME,
-        base_image_tag=OMP_BASE_IMAGE,
-        read_only_args=("-p", "{prompt}", "--tools=read,grep,glob"),
-        signature_files=(),
-        auth_session_files=(".omp",),
-        profile_dir_name=".omp",
-    ),
-    "prime-agent": AgentSpec(
-        identifier="prime-agent",
-        display_name="Prime Agent (RLM)",
-        sbx_agent_arg="shell",
-        kit_ref="prime-agent",
-        cli_binary="prime-agent",
-        dockerfile_name=PRIME_DOCKERFILE_NAME,
-        base_image_tag=PRIME_BASE_IMAGE,
-        read_only_args=("-p", "--no-session", "--no-tools", "{prompt}"),
-        sbx_secret_services=("prime", "anthropic", "openai", "google"),
-        signature_files=("AGENTS.md", ".prime"),
-        auth_session_files=(".prime",),
-        profile_dir_name=".prime",
-    ),
-    "shell": AgentSpec(
-        identifier="shell",
-        display_name="Interactive Shell",
-        sbx_agent_arg="shell",
-        kit_ref="",
-        cli_binary="",
-        read_only_args=(),
-        signature_files=(),
-        auth_session_files=(),
-        profile_dir_name=".shell",
-    ),
-}
-
-
-def discover_available_agent(preferred_agent: Optional[str] = None) -> Optional[AgentSpec]:
-    """
-    Scans PATH for available agent binaries. If preferred_agent is provided and installed, returns it.
-    Otherwise checks agents in priority order ('agy', 'claude', 'opencode', 'codex', 'omp').
-    Returns None if no agent binary is found on PATH.
-    """
-    if preferred_agent and preferred_agent in AGENT_SPECS:
-        spec = AGENT_SPECS[preferred_agent]
-        if spec.cli_binary and shutil.which(spec.cli_binary):
-            return spec
-
-    priority = ("agy", "claude", "opencode", "codex", "omp", "prime-agent")
-    for agent_id in priority:
-        spec = AGENT_SPECS[agent_id]
-        if spec.cli_binary and shutil.which(spec.cli_binary):
-            return spec
-
-    return None
 
 
 def slugify_project_name(name: str) -> str:
-    """
-    Converts arbitrary project names into valid, clean Docker/DNS-compatible slugs.
-    Handles spaces, underscores, uppercase letters, and special characters.
-    """
+    """Turns an arbitrary project name into a Docker/DNS-safe slug."""
     if not name:
         return "default-project"
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", name).strip("-").lower()
-    return slug if slug else "default-project"
+    return slug or "default-project"

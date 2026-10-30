@@ -21,7 +21,19 @@ name: claude
 # disagrees with it. Bump here first, then tag.
 version: "1.0.0"
 displayName: Claude Code
-description: Anthropic's Claude Code, with API-key and subscription sign-in both resolved by the sandbox proxy.
+description: Anthropic's Claude Code, with sandbox-local sign-in or API-key/subscription credentials resolved by the sandbox proxy.
+
+# agy-sandbox addition: the login mode is an explicit kit argument instead of
+# being inferred from whether a host secret happens to exist.
+#   sandbox-local  never write the proxy apiKeyHelper; `claude /login` inside the
+#                  sandbox holds the real credential.
+#   proxy-managed  write it when sbx reports a resolved credential
+#                  (SBX_CRED_ANTHROPIC_MODE != none).
+args:
+  auth_mode:
+    default: "sandbox-local"
+    description: sandbox-local (log in inside the sandbox) or proxy-managed (host-held sbx secret via the proxy)
+    pattern: '^(sandbox-local|proxy-managed)$'
 
 # Credentials: omitted. The built-in `shell` sandbox these mixins compose onto already
 # defines the proxy credentials for anthropic, and sbx
@@ -201,7 +213,7 @@ setup:
         set -e
         mkdir -p /home/agent/.claude
         HELPER=''
-        if [ "${SBX_CRED_ANTHROPIC_MODE:-none}" != none ]; then
+        if [ "${{ kit.args.auth_mode }}" = proxy-managed ] && [ "${SBX_CRED_ANTHROPIC_MODE:-none}" != none ]; then
           HELPER='  "apiKeyHelper": "echo proxy-managed",
         '
         fi
@@ -214,7 +226,7 @@ setup:
         }
         " > /home/agent/.claude/settings.json
       user: "agent"
-      description: Seed Claude settings.json from SBX_CRED_ANTHROPIC_MODE
+      description: Seed Claude settings.json from auth_mode and SBX_CRED_ANTHROPIC_MODE
     # Gateway-first MCP registration, seeded at INSTALL time so it is race-free.
     # Install commands are synchronous container PostStart hooks that complete
     # during create, BEFORE the CLI attaches and launches the interactive

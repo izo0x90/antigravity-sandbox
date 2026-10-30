@@ -21,7 +21,18 @@ name: opencode
 # disagrees with it. Bump here first, then tag.
 version: "1.0.0"
 displayName: OpenCode
-description: OpenCode, the open-source terminal coding agent, with every provider credential resolved by the sandbox proxy.
+description: OpenCode, the open-source terminal coding agent, with sandbox-local sign-in or provider credentials resolved by the sandbox proxy.
+
+# agy-sandbox addition: the login mode is an explicit kit argument. OpenCode
+# reads provider keys from the environment, so in proxy-managed mode the
+# built-in shell sandbox's `*_API_KEY=proxy-managed` variables do the work; in
+# sandbox-local mode the GitHub Copilot seed below is skipped and you sign in
+# with `opencode auth login` inside the sandbox.
+args:
+  auth_mode:
+    default: "sandbox-local"
+    description: sandbox-local (log in inside the sandbox) or proxy-managed (host-held sbx secrets via the proxy)
+    pattern: '^(sandbox-local|proxy-managed)$'
 
 # Credentials: only `groq` is kept. The built-in `shell` sandbox these mixins compose
 # onto already defines anthropic, github, google, openai, openrouter and xai, and sbx
@@ -169,6 +180,7 @@ setup:
           umask 077
           # Local sandboxes always carry GH_TOKEN and say via the mode var whether a
           # credential backs it; cloud sets GH_TOKEN only when one does and no mode var.
+          [ "${{ kit.args.auth_mode }}" = proxy-managed ] || exit 0
           [ -n "${GH_TOKEN:-}" ] || exit 0
           [ "${SBX_CRED_GITHUB_MODE:-}" != none ] || exit 0
           auth="$HOME/.local/share/opencode/auth.json"

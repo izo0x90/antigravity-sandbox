@@ -1,0 +1,59 @@
+# The proxy-managed half of kits/agy. sbx reads credential declarations
+# statically, so this cannot live behind a switch in kits/agy itself; the
+# agy-sandbox wrapper attaches this kit next to kits/agy only when
+# `auth_mode: proxy-managed`.
+#
+# With it attached the sbx proxy intercepts agy's token exchange at
+# oauth2.googleapis.com/token, keeps the real Google OAuth token on the host,
+# writes placeholder sentinels into the sandbox's token file, and swaps the
+# real token in only for the hosts listed under resourceHosts.
+#
+# For GCP / Gemini Enterprise logins the token store holds tokens, not the
+# project you picked, so pass them as kit args in agy.yaml:
+#   kit_args:
+#     agy-proxy.auth_method: gcp
+#     agy-proxy.gcp_project: my-project
+schemaVersion: "2"
+kind: mixin
+name: agy-proxy
+version: "1.0.0"
+displayName: Google Antigravity (proxy-managed credentials)
+description: Holds agy's Google OAuth token on the host and injects it through the sandbox proxy. Attached automatically when auth_mode is proxy-managed.
+
+args:
+  auth_method:
+    default: "consumer"
+    description: Antigravity login mode written into the token file; use gcp for Google Cloud / Gemini Enterprise
+    pattern: '^(consumer|gcp)$'
+  gcp_project:
+    default: ""
+    description: Google Cloud project ID; required for reusing a gcp login
+  gcp_location:
+    default: "global"
+    description: Google Cloud location used with gcp authentication
+
+credentials:
+  - service: antigravity
+    description: Google OAuth session used by Antigravity CLI
+    oauth:
+      tokenEndpoint:
+        host: oauth2.googleapis.com
+        path: /token
+      resourceHosts:
+        - businessaicode.googleapis.com
+        - aiplatform.googleapis.com
+        - play.googleapis.com
+        - aicode.googleapis.com
+        - cloudaicompanion.googleapis.com
+        - cloudcode-pa.googleapis.com
+        - daily-cloudcode-pa.googleapis.com
+        - generativelanguage.googleapis.com
+        - www.googleapis.com
+      sentinels:
+        accessToken: agy-oauth-access-proxy-managed
+        refreshToken: agy-oauth-refresh-proxy-managed
+      credentialFile:
+        path: "~/.gemini/antigravity-cli/antigravity-oauth-token"
+        # The host proxy refreshes the real token; the far-future expiry keeps
+        # the sentinel locally "valid" so agy never tries to refresh it itself.
+        template: '{"token":{"access_token":"{{.AccessToken}}","token_type":"Bearer","refresh_token":"{{.RefreshToken}}","expiry":"9999-12-31T23:59:59Z"},"auth_method":"${{ kit.args.auth_method }}","project_id":"${{ kit.args.gcp_project }}","region":"${{ kit.args.gcp_location }}"}'

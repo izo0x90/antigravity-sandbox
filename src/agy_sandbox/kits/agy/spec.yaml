@@ -1,0 +1,113 @@
+# Google Antigravity CLI (agy) as a mixin on the built-in shell sandbox, in the
+# same shape as kits/claude, kits/codex and kits/opencode. The binary is
+# installed by docker/Dockerfile.agy; this kit carries the network policy,
+# permissive settings and the login-mode behaviour.
+#
+# Login mode:
+#   sandbox-local  (default) agy logs in inside the sandbox and keeps the real
+#                  Google OAuth token in ~/.gemini/antigravity-cli. Nothing
+#                  intercepts it, so GCP / Gemini Enterprise logins (which call
+#                  businessaicode.googleapis.com for the license) work as on a
+#                  normal machine.
+#   proxy-managed  the agy-sandbox wrapper additionally attaches kits/agy-proxy,
+#                  which declares the sbx OAuth credential: the real token stays
+#                  on the host and the sandbox proxy swaps a placeholder for it.
+#
+# Hosts are derived from shelajev/agy-sbx-kit v1.1.1 (the current upstream
+# Antigravity kit), including the license and Vertex hosts its earlier
+# versions were missing.
+schemaVersion: "2"
+kind: mixin
+name: agy
+version: "1.0.0"
+displayName: Google Antigravity
+description: Google's Antigravity CLI (agy), with sandbox-local or proxy-managed Google OAuth.
+
+args:
+  auth_mode:
+    default: "sandbox-local"
+    description: sandbox-local (agy logs in inside the sandbox) or proxy-managed (host-held token via the sbx proxy)
+    pattern: '^(sandbox-local|proxy-managed)$'
+
+permissions:
+  network:
+    allow:
+      # CLI installer, self-update manifests and engine downloads
+      - antigravity.google
+      - antigravity-unleash.goog
+      - antigravity-cli-auto-updater-974169037036.us-central1.run.app
+      - storage.googleapis.com
+      # Google OAuth sign-in and token exchange
+      - accounts.google.com
+      - lh3.googleusercontent.com
+      - oauth2.googleapis.com
+      - play.googleapis.com
+      - www.googleapis.com
+      # License / tier lookup for GCP and Gemini Enterprise logins
+      - businessaicode.googleapis.com
+      - aiplatform.googleapis.com
+      # Antigravity / Gemini Code Assist model and agent APIs
+      - aicode.googleapis.com
+      - cloudaicompanion.googleapis.com
+      - cloudcode-pa.googleapis.com
+      - daily-cloudcode-pa.googleapis.com
+      - generativelanguage.googleapis.com
+      # apt sources the base image ships (background `apt-get update` in other kits)
+      - archive.ubuntu.com
+      - security.ubuntu.com
+      - ports.ubuntu.com
+
+environment:
+  variables:
+    # agy detects SSH/remote environments and switches to a copy/paste OAuth
+    # flow (prints a URL, you paste the callback URL back) instead of trying
+    # to open a browser inside the sandbox.
+    SSH_CONNECTION: "sandbox 0 sandbox 0"
+
+setup:
+  install:
+    # Permissive settings for sandboxed operation, written only when missing so
+    # a login or settings change made inside the sandbox is never overwritten.
+    - command: |
+        set -eu
+        settings_dir="$HOME/.gemini/antigravity-cli"
+        settings="$settings_dir/settings.json"
+        mkdir -p "$settings_dir"
+        [ ! -e "$settings" ] || exit 0
+        ws="${WORKSPACE_DIR:-/}"
+        esc=$(printf '%s' "$ws" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g')
+        printf '%s\n' "{
+          \"agentMode\": \"accept-edits\",
+          \"artifactReviewMode\": \"always-proceed\",
+          \"fileAccessPolicy\": \"allow\",
+          \"internetAccessPolicy\": \"allow\",
+          \"nonWorkspaceFileAccess\": \"allow\",
+          \"permissions\": {
+            \"allow\": [
+              \"command(*)\",
+              \"execute_url(*)\",
+              \"mcp(*)\",
+              \"read_file(*)\",
+              \"read_url(*)\",
+              \"write_file(*)\"
+            ]
+          },
+          \"toolExecutionPolicy\": \"always-proceed\",
+          \"trustedWorkspaces\": [\"$esc\"]
+        }" > "$settings"
+        chmod 0600 "$settings"
+      user: "agent"
+      description: Seed permissive Antigravity settings (only if missing)
+    # In sandbox-local mode a leftover proxy placeholder token (from a sandbox
+    # that once ran proxy-managed) would be sent to Google as-is and 401. Drop
+    # it so agy prompts for a real login instead.
+    - command: |
+        set -eu
+        [ "${{ kit.args.auth_mode }}" = "sandbox-local" ] || exit 0
+        token="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+        [ -f "$token" ] || exit 0
+        if grep -q "proxy-managed" "$token"; then
+          rm -f "$token"
+        fi
+      user: "agent"
+      description: Remove a stale proxy-managed token in sandbox-local mode

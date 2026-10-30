@@ -13,8 +13,6 @@ RUN apt-get update && apt-get install -y \
     wget \
     jq \
     ca-certificates \
-    dbus-x11 \
-    gnome-keyring \
     ncurses-term \
     ncurses-bin \
     sudo \
@@ -36,30 +34,13 @@ RUN mkdir -p /lib/terminfo \
 # Install uv globally
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
 
-# Download and extract the Antigravity Engine
-RUN cd /opt && \
-    curl -fsSLO https://storage.googleapis.com/antigravity-public/antigravity-hub/2.0.1-6566078776737792/linux-x64/Antigravity.tar.gz && \
-    tar -xzf Antigravity.tar.gz && \
-    rm Antigravity.tar.gz
-
 # Create standard unprivileged agent user (UID 1000) for sbx compatibility
 RUN groupadd --gid 1000 agent \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
     && echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Switch to the unprivileged agent user context
-USER agent
-WORKDIR /home/agent
-
-# Install Antigravity CLI as the agent user
-RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
-
-# Ensure local bin is on the PATH
+# Keep ~/.local/bin on PATH for every user: agent layers install their CLIs there
 ENV PATH="/home/agent/.local/bin:$PATH"
-
-# Switch back to root user context by default so downstream Dockerfiles compile cleanly
-USER root
-WORKDIR /
 
 # Set the entrypoint to bash by default
 CMD ["/bin/bash"]

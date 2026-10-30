@@ -1,7 +1,8 @@
 from pathlib import Path
 from typing import List, Optional
 
-from .constants import AGENT_SPECS, BASE_DOCKERFILE_NAME, SUPPORTED_BUILD_ARGS, DEFAULT_ENV_VARS
+from .agents import AGENT_SPECS
+from .constants import AUTH_MODES, BASE_DOCKERFILE_NAME, SUPPORTED_BUILD_ARGS
 from .kits import list_bundled_kits
 
 
@@ -18,10 +19,10 @@ def get_base_dockerfile_content() -> str:
 
 
 def build_auto_init_prompt(
-    sbx_enabled: bool,
     agent: str,
     clone_enabled: bool,
     kits: Optional[List[str]] = None,
+    auth_mode: str = AUTH_MODES[0],
 ) -> str:
     """
     Constructs a fully dynamic read-only prompt for an AI harness to analyze a project workspace.
@@ -29,15 +30,11 @@ def build_auto_init_prompt(
     and runtime specs directly from the application registry.
     """
     default_kits = []
-    if sbx_enabled:
-        if agent in AGENT_SPECS:
-            kit_ref = AGENT_SPECS[agent].kit_ref
-            if kit_ref and kit_ref not in default_kits and kit_ref != ".":
-                default_kits.append(kit_ref)
-        if kits:
-            for k in kits:
-                if k and k != "." and k not in default_kits:
-                    default_kits.append(k)
+    if agent in AGENT_SPECS and AGENT_SPECS[agent].has_kit:
+        default_kits.append(agent)
+    for k in kits or []:
+        if k and k != "." and k not in default_kits:
+            default_kits.append(k)
 
     # 1. Read Level 1 Base Dockerfile
     base_dockerfile_text = get_base_dockerfile_content()
@@ -86,7 +83,8 @@ def build_auto_init_prompt(
         "   - Ordered list of commands to bootstrap dependencies, code generation, and verification (e.g., `uv sync`, `pnpm install`, `cargo fetch`, `make setup`, `cargo check`). Note: `uv` is already in Level 1, do NOT add `pip install uv`.\n\n"
         "3. `env`:\n"
         "   - Default, non-secret environment variables extracted from `.env.example`, `docker-compose.yml`, etc.\n\n"
-        "4. `sbx.kits` (COMPOSABLE MIXIN KITS & AGENTS):\n"
+        "   NOTE: `setup_scripts` run once inside the sandbox VM when it is created, and `env` is applied to every session.\n\n"
+        "4. `kits` (COMPOSABLE MIXIN KITS & AGENTS):\n"
         "   AVAILABLE BUNDLED MIXIN KITS:\n"
         f"{formatted_kits_list}\n\n"
         "   AVAILABLE AGENT HARNESSES:\n"
@@ -107,12 +105,10 @@ def build_auto_init_prompt(
         '  "env": [\n'
         '    "ENVIRONMENT=development"\n'
         "  ],\n"
-        '  "sbx": {\n'
-        f'    "enabled": {"true" if sbx_enabled else "false"},\n'
-        f'    "agent": "{agent}",\n'
-        f'    "clone": {"true" if clone_enabled else "false"},\n'
-        f'    "kits": {default_kits}\n'
-        "  },\n"
+        f'  "agent": "{agent}",\n'
+        f'  "kits": {default_kits},\n'
+        f'  "auth_mode": "{auth_mode}",\n'
+        f'  "clone": {"true" if clone_enabled else "false"},\n'
         '  "recommendations": {\n'
         '    "dockerfile_needed": false,\n'
         '    "reason": "<explanation if custom Dockerfile.agy is recommended>"\n'

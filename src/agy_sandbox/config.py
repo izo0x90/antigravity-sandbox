@@ -1,23 +1,38 @@
+"""
+agy.yaml: one flat document describing a sandbox.
+
+    profile: default
+    project_name: my_app
+    agent: claude                 # primary agent; its kit is always attached
+    kits: [claude, opencode]      # agent kits and mixin kits, bundled names, local dirs or remote refs
+    auth_mode: sandbox-local      # or proxy-managed
+    clone: true                   # work on a private in-VM clone instead of a bind mount
+    ports: ["3000:3000"]          # published to the host
+    host_browser: {enabled, port, headless}   # only written when non-default
+    kit_args: {chrome-host.host_port: "9222"} # passed through to `sbx run --kit-arg`
+    build_args: {PYTHON_VERSION: "3.12"}
+    setup_scripts: [uv sync]      # run once inside the VM when the sandbox is created
+    env: [ENVIRONMENT=development]
+
+Pre-0.5 files nested most of this under `sbx:` and carried a Docker-only
+runtime; `AgyConfig.from_dict` still reads them and records what changed in
+`migration_notes` so the CLI can tell the user how to update.
+"""
 from dataclasses import dataclass, field
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+
 import yaml
 
+from .agents import AGENT_AGY, AGENT_SPECS, AgentSpec
 from .constants import (
-    AGENT_AGY,
-    AGENT_OMP,
-    AGENT_PRIME_AGENT,
-    AGENT_SPECS,
-    AgentSpec,
-    DEFAULT_BUILD_ARGS,
+    AUTH_MODE_SANDBOX_LOCAL,
+    AUTH_MODES,
     DEFAULT_CONFIG_FILE,
-    DEFAULT_ENV_VARS,
     DEFAULT_HOST_BROWSER_PORT,
-    DEFAULT_SETUP_SCRIPTS,
-    KIT_OMP,
-    KIT_PRIME_AGENT,
+    LEGACY_AUTH_MODES,
 )
-from .naming import SandboxNamingResolver
+from .naming import image_name, sandbox_name
 
 
 @dataclass
@@ -40,259 +55,178 @@ class HostBrowserConfig:
 
 
 @dataclass
-class SbxConfig:
-    enabled: bool = False
-    agent: str = AGENT_AGY
-    clone: bool = False
-    kits: List[str] = field(default_factory=list)
-    ports: List[str] = field(default_factory=list)
-    host_browser: HostBrowserConfig = field(default_factory=HostBrowserConfig)
-
-
-@dataclass
 class AgyConfig:
     profile: str = "default"
     project_name: str = "default_project"
     agent: str = AGENT_AGY
-    auth_mode: str = "sbx_persistent"
-    workspace_path: Optional[str] = None
+    kits: List[str] = field(default_factory=list)
+    auth_mode: str = AUTH_MODE_SANDBOX_LOCAL
+    clone: bool = False
+    ports: List[str] = field(default_factory=list)
+    host_browser: HostBrowserConfig = field(default_factory=HostBrowserConfig)
+    kit_args: Dict[str, str] = field(default_factory=dict)
     build_args: Dict[str, str] = field(default_factory=dict)
     setup_scripts: List[str] = field(default_factory=list)
     env: List[str] = field(default_factory=list)
-    use_native_login: bool = False
-    sbx: SbxConfig = field(default_factory=SbxConfig)
+    # What `from_dict` had to translate from a pre-0.5 file; never saved
+    migration_notes: List[str] = field(default_factory=list, compare=False, repr=False)
 
     @property
     def sandbox_name(self) -> str:
-        return SandboxNamingResolver.resolve_sandbox_name(self.project_name, self.profile)
-
-    @property
-    def legacy_sandbox_name(self) -> str:
-        return SandboxNamingResolver.resolve_legacy_sandbox_name(self.project_name)
-
-    @property
-    def container_name(self) -> str:
-        return SandboxNamingResolver.resolve_container_name(self.project_name, self.profile)
+        return sandbox_name(self.project_name, self.profile)
 
     @property
     def image_name(self) -> str:
-        return SandboxNamingResolver.resolve_image_name(self.project_name)
-
-    def get_requested_agent_specs(self) -> List[AgentSpec]:
-        """
-        Dynamically collects and resolves all requested agent specifications from
-        self.agent, self.sbx.agent, and self.sbx.kits in insertion order without duplicates.
-        """
-        requested_keys: List[str] = []
-
-        def _add_key(key: str) -> None:
-            if not key:
-                return
-
-            norm_key = os.path.basename(key.rstrip("/\\")) if ("/" in key or "\\" in key) else key
-
-            if key in AGENT_SPECS and key not in requested_keys:
-                requested_keys.append(key)
-            elif norm_key in AGENT_SPECS and norm_key not in requested_keys:
-                requested_keys.append(norm_key)
-            else:
-                for spec_key, spec in AGENT_SPECS.items():
-                    if spec.kit_ref and (spec.kit_ref == key or spec.kit_ref == norm_key) and spec_key not in requested_keys:
-                        requested_keys.append(spec_key)
-
-        _add_key(self.agent)
-        _add_key(self.sbx.agent)
-        for kit in self.sbx.kits:
-            _add_key(kit)
-
-        return [AGENT_SPECS[k] for k in requested_keys]
-
-    @property
-    def is_omp_requested(self) -> bool:
-        return any(spec.identifier == AGENT_OMP for spec in self.get_requested_agent_specs())
-
-    @property
-    def is_prime_requested(self) -> bool:
-        return any(spec.identifier == AGENT_PRIME_AGENT for spec in self.get_requested_agent_specs())
+        return image_name(self.project_name)
 
     @property
     def agent_spec(self) -> AgentSpec:
-        agent_key = self.sbx.agent if (self.sbx.agent in AGENT_SPECS and self.sbx.agent != AGENT_AGY) else self.agent
-        return AGENT_SPECS.get(agent_key, AGENT_SPECS[AGENT_AGY])
+        return AGENT_SPECS.get(self.agent, AGENT_SPECS[AGENT_AGY])
+
+    def all_kits(self) -> List[str]:
+        """The primary agent's kit first, then every configured kit, without duplicates."""
+        kits: List[str] = []
+        if self.agent_spec.has_kit:
+            kits.append(self.agent_spec.identifier)
+        for kit in self.kits:
+            if kit and kit != "." and kit not in kits:
+                kits.append(kit)
+        return kits
+
+    def requested_agent_specs(self) -> List[AgentSpec]:
+        """Every agent whose kit is attached: the primary plus any agent kit in `kits`."""
+        specs: List[AgentSpec] = []
+        for kit in [self.agent] + self.all_kits():
+            key = os.path.basename(kit.rstrip("/\\")) if ("/" in kit or "\\" in kit) else kit
+            spec = AGENT_SPECS.get(key)
+            if spec and spec not in specs:
+                specs.append(spec)
+        return specs
 
     @classmethod
-    def from_dict(cls, data: dict) -> "AgyConfig":
-        data = data or {}
-        build_args = data.get("build_args") or {}
+    def from_dict(cls, data: Optional[dict]) -> "AgyConfig":
+        data = dict(data or {})
+        notes: List[str] = []
 
-        # Backward compatibility for old configs containing "runtime"
-        if "runtime" in data and isinstance(data["runtime"], dict):
-            runtime_data = data["runtime"]
-            if "python" in runtime_data and "PYTHON_VERSION" not in build_args:
-                build_args["PYTHON_VERSION"] = str(runtime_data["python"])
-            if "node" in runtime_data and "NODE_VERSION" not in build_args:
-                build_args["NODE_VERSION"] = str(runtime_data["node"])
-            if "apt_packages" in runtime_data and "APT_PACKAGES" not in build_args:
-                build_args["APT_PACKAGES"] = " ".join(runtime_data["apt_packages"])
+        # --- pre-0.5 layout -------------------------------------------------
+        legacy_sbx = data.pop("sbx", None)
+        if isinstance(legacy_sbx, bool):
+            legacy_sbx = {}
+        if isinstance(legacy_sbx, dict):
+            notes.append("the `sbx:` block is gone; agent, kits, clone, ports and host_browser now sit at the top level")
+            for key in ("agent", "kits", "clone", "ports", "host_browser", "auth_mode"):
+                if key in legacy_sbx and key not in data:
+                    data[key] = legacy_sbx[key]
+        if data.pop("use_native_login", None) is not None:
+            notes.append("`use_native_login` is gone; logins are governed by `auth_mode` (sandbox-local or proxy-managed)")
+        if data.pop("workspace_path", None) is not None:
+            notes.append("`workspace_path` is gone; sbx mounts the workspace at its host path")
+        runtime = data.pop("runtime", None)
+        if isinstance(runtime, dict):
+            notes.append("`runtime:` is gone; use `build_args` (PYTHON_VERSION, NODE_VERSION, APT_PACKAGES)")
+            build_args = data.setdefault("build_args", None) or {}
+            if "python" in runtime:
+                build_args.setdefault("PYTHON_VERSION", str(runtime["python"]))
+            if "node" in runtime:
+                build_args.setdefault("NODE_VERSION", str(runtime["node"]))
+            if "apt_packages" in runtime:
+                build_args.setdefault("APT_PACKAGES", " ".join(runtime["apt_packages"]))
+            data["build_args"] = build_args
 
-        sbx_data = data.get("sbx")
-        if isinstance(sbx_data, dict):
-            sbx_dict = sbx_data
-            sbx_enabled = sbx_dict.get("enabled", False)
-        elif isinstance(sbx_data, bool):
-            sbx_dict = {}
-            sbx_enabled = sbx_data
-        else:
-            sbx_dict = {}
-            sbx_enabled = False
+        raw_auth = data.get("auth_mode") or AUTH_MODE_SANDBOX_LOCAL
+        if raw_auth in LEGACY_AUTH_MODES:
+            notes.append(f"`auth_mode: {raw_auth}` is now `auth_mode: {LEGACY_AUTH_MODES[raw_auth]}`")
+            raw_auth = LEGACY_AUTH_MODES[raw_auth]
+        if raw_auth not in AUTH_MODES:
+            raise ValueError(f"auth_mode must be one of {', '.join(AUTH_MODES)} (got '{raw_auth}')")
 
-        raw_agent = data.get("agent") or sbx_dict.get("agent") or AGENT_AGY
-        raw_auth_mode = data.get("auth_mode") or sbx_dict.get("auth_mode") or "sbx_persistent"
+        agent = data.get("agent") or AGENT_AGY
+        if agent not in AGENT_SPECS:
+            raise ValueError(f"Unknown agent '{agent}'. Available agents: {', '.join(AGENT_SPECS)}")
 
-        if raw_agent != AGENT_AGY:
-            sbx_enabled = True
-
-        sbx_kits = sbx_dict.get("kits") or []
-        raw_ports = sbx_dict.get("ports") or data.get("ports") or []
-        sbx_ports = [str(p) for p in raw_ports if p]
-
-        sbx = SbxConfig(
-            enabled=sbx_enabled,
-            agent=raw_agent,
-            clone=sbx_dict.get("clone", False),
-            kits=sbx_kits,
-            ports=sbx_ports,
-            host_browser=HostBrowserConfig.from_dict(sbx_dict.get("host_browser")),
-        )
+        kit_args = data.get("kit_args") or {}
         return cls(
             profile=data.get("profile") or "default",
             project_name=data.get("project_name") or "default_project",
-            agent=raw_agent,
-            auth_mode=raw_auth_mode,
-            workspace_path=data.get("workspace_path"),
-            build_args=build_args,
-            setup_scripts=data.get("setup_scripts") or [],
-            env=data.get("env") or [],
-            use_native_login=data.get("use_native_login") or False,
-            sbx=sbx,
+            agent=agent,
+            kits=[str(k) for k in (data.get("kits") or []) if k],
+            auth_mode=raw_auth,
+            clone=bool(data.get("clone", False)),
+            ports=[str(p) for p in (data.get("ports") or []) if p],
+            host_browser=HostBrowserConfig.from_dict(data.get("host_browser")),
+            kit_args={str(k): str(v) for k, v in kit_args.items()},
+            build_args={str(k): str(v) for k, v in (data.get("build_args") or {}).items()},
+            setup_scripts=[str(s) for s in (data.get("setup_scripts") or [])],
+            env=[str(e) for e in (data.get("env") or [])],
+            migration_notes=notes,
         )
+
+    def to_dict(self) -> dict:
+        data: dict = {
+            "profile": self.profile,
+            "project_name": self.project_name,
+            "agent": self.agent,
+            "kits": list(self.kits),
+            "auth_mode": self.auth_mode,
+            "clone": self.clone,
+        }
+        # Optional sections are written only when set, to keep generated files small
+        if self.ports:
+            data["ports"] = list(self.ports)
+        if self.host_browser != HostBrowserConfig():
+            data["host_browser"] = self.host_browser.to_dict()
+        if self.kit_args:
+            data["kit_args"] = dict(self.kit_args)
+        data["build_args"] = dict(self.build_args)
+        data["setup_scripts"] = list(self.setup_scripts)
+        data["env"] = list(self.env)
+        return data
 
 
 def load_config(path: str = DEFAULT_CONFIG_FILE) -> AgyConfig:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Configuration file {path} not found.")
-
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
-
     return AgyConfig.from_dict(data)
 
 
 def save_config(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> None:
-    data = {
-        "profile": config.profile,
-        "project_name": config.project_name,
-        "agent": config.agent,
-        "auth_mode": config.auth_mode,
-        "build_args": config.build_args,
-        "setup_scripts": config.setup_scripts,
-        "env": config.env,
-        "use_native_login": config.use_native_login,
-        "sbx": {
-            "enabled": config.sbx.enabled,
-            "agent": config.sbx.agent,
-            "clone": config.sbx.clone,
-            "kits": config.sbx.kits,
-        },
-    }
-    # Only persist ports and host_browser once they differ from the defaults, to keep generated configs minimal
-    if config.sbx.ports:
-        data["sbx"]["ports"] = list(config.sbx.ports)
-    if config.sbx.host_browser != HostBrowserConfig():
-        data["sbx"]["host_browser"] = config.sbx.host_browser.to_dict()
-    if config.workspace_path is not None:
-        data["workspace_path"] = config.workspace_path
-
     with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, sort_keys=False)
+        yaml.dump(config.to_dict(), f, sort_keys=False)
 
 
-def resolve_sbx_params(
-    sbx: bool = False,
-    omp: bool = False,
-    clone: bool = False,
-    agent: Optional[str] = None,
-    additional_agents: Optional[List[str]] = None,
-    kits: Optional[List[str]] = None,
-) -> SbxConfig:
-    resolved_agent = agent or (AGENT_OMP if omp else AGENT_AGY)
-    sbx_enabled = sbx or omp or bool(kits) or bool(additional_agents) or (resolved_agent != AGENT_AGY)
-    clone_enabled = clone or sbx_enabled
-
-    resolved_kits = []
-    if sbx_enabled:
-        if resolved_agent in AGENT_SPECS:
-            kit_ref = AGENT_SPECS[resolved_agent].kit_ref
-            if kit_ref and kit_ref not in resolved_kits:
-                resolved_kits.append(kit_ref)
-
-    if additional_agents:
-        for add_agent in additional_agents:
-            if add_agent in AGENT_SPECS:
-                kit_ref = AGENT_SPECS[add_agent].kit_ref
-                if kit_ref and kit_ref not in resolved_kits:
-                    resolved_kits.append(kit_ref)
-            elif add_agent not in resolved_kits:
-                resolved_kits.append(add_agent)
-
-    if kits:
-        for kit in kits:
-            if kit and kit != "." and kit not in resolved_kits:
-                resolved_kits.append(kit)
-
-    resolved_kits = [k for k in resolved_kits if k != "."]
-
-    return SbxConfig(
-        enabled=sbx_enabled,
-        agent=resolved_agent,
-        clone=clone_enabled,
-        kits=resolved_kits,
-    )
+def migration_warning(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> Optional[str]:
+    """A warning block to print when the file used a pre-0.5 layout, or None."""
+    if not config.migration_notes:
+        return None
+    lines = [f"⚠️  {path} uses a pre-0.5 layout. It still loads, but please update it:"]
+    lines += [f"   - {note}" for note in config.migration_notes]
+    lines.append("   Run 'agy-sandbox config migrate' to rewrite it in the current layout.")
+    return "\n".join(lines)
 
 
-def write_default_config(
-    path: str = DEFAULT_CONFIG_FILE,
-    sbx_enabled: bool = False,
-    clone_enabled: bool = False,
-    kits: Optional[List[str]] = None,
+def default_config(
     agent: str = AGENT_AGY,
-    additional_agents: Optional[List[str]] = None,
-    omp: bool = False,
-) -> None:
-    sbx = resolve_sbx_params(
-        sbx=sbx_enabled,
-        omp=omp,
-        clone=clone_enabled,
-        agent=agent,
-        additional_agents=additional_agents,
-        kits=kits,
-    )
+    kits: Tuple[str, ...] = (),
+    clone: bool = False,
+    auth_mode: str = AUTH_MODE_SANDBOX_LOCAL,
+    project_name: Optional[str] = None,
+) -> AgyConfig:
+    """The config `init` writes: the requested agents and kits on the default build."""
+    from .constants import DEFAULT_BUILD_ARGS, DEFAULT_ENV_VARS, DEFAULT_SETUP_SCRIPTS
 
-    default_config = {
-        "profile": "default",
-        "project_name": os.path.basename(os.getcwd()),
-        "agent": sbx.agent,
-        "auth_mode": "sbx_persistent",
-        "build_args": dict(DEFAULT_BUILD_ARGS),
-        "setup_scripts": list(DEFAULT_SETUP_SCRIPTS),
-        "env": list(DEFAULT_ENV_VARS),
-        "use_native_login": False,
-        "sbx": {
-            "enabled": sbx.enabled,
-            "agent": sbx.agent,
-            "clone": sbx.clone,
-            "kits": sbx.kits,
-        },
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.dump(default_config, f, sort_keys=False)
+    config = AgyConfig(
+        project_name=project_name or os.path.basename(os.getcwd()),
+        agent=agent,
+        auth_mode=auth_mode,
+        clone=clone,
+        build_args=dict(DEFAULT_BUILD_ARGS),
+        setup_scripts=list(DEFAULT_SETUP_SCRIPTS),
+        env=list(DEFAULT_ENV_VARS),
+    )
+    for kit in list(kits):
+        if kit and kit not in config.kits:
+            config.kits.append(kit)
+    config.kits = config.all_kits()
+    return config

@@ -7,15 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agy_sandbox.config import AgyConfig, HostBrowserConfig, load_config, save_config
-from agy_sandbox.constants import AGY_MIXIN_KIT_URL, DEFAULT_SBX_KIT_URL, KIT_CHROME_DEVTOOLS, KIT_CHROME_HOST
-from agy_sandbox.engine import (
-    host_browser_kit_args,
-    run_up,
-    check_existing_sandbox_host_browser,
-    validate_host_browser,
-)
 from agy_sandbox.host_browser import HostBrowser, HostBrowserError
-from agy_sandbox.runners.sbx import resolve_run_kits
 
 RELAY_PATH = (
     Path(__file__).resolve().parent.parent
@@ -30,21 +22,6 @@ def load_relay_module():
     return module
 
 
-def sbx_config(agent="claude", kits=None, host_browser=False) -> AgyConfig:
-    return AgyConfig.from_dict(
-        {
-            "project_name": "demo",
-            "agent": agent,
-            "sbx": {
-                "enabled": True,
-                "agent": agent,
-                "kits": list(kits if kits is not None else [KIT_CHROME_DEVTOOLS]),
-                "host_browser": {"enabled": host_browser, "port": 9333},
-            },
-        }
-    )
-
-
 class TestHostBrowserConfig(unittest.TestCase):
     def test_defaults_when_missing(self):
         self.assertEqual(HostBrowserConfig.from_dict(None), HostBrowserConfig())
@@ -52,13 +29,13 @@ class TestHostBrowserConfig(unittest.TestCase):
     def test_saved_only_when_non_default(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = os.path.join(tmp_dir, "agy.yaml")
-            config = AgyConfig.from_dict({"sbx": {"enabled": True}})
+            config = AgyConfig()
             save_config(config, path)
             self.assertNotIn("host_browser", Path(path).read_text())
 
-            config.sbx.host_browser = HostBrowserConfig(enabled=True, port=9333, headless=True)
+            config.host_browser = HostBrowserConfig(enabled=True, port=9333, headless=True)
             save_config(config, path)
-            self.assertEqual(load_config(path).sbx.host_browser, HostBrowserConfig(enabled=True, port=9333, headless=True))
+            self.assertEqual(load_config(path).host_browser, HostBrowserConfig(enabled=True, port=9333, headless=True))
 
 
 class TestHostBrowser(unittest.TestCase):
@@ -133,75 +110,6 @@ class TestHostBrowser(unittest.TestCase):
             self.browser.stop()
         mock_kill.assert_not_called()
         self.assertFalse(self.browser.pid_file.exists())
-
-
-class TestHostBrowserSandboxWiring(unittest.TestCase):
-    def test_validate_requires_sbx(self):
-        config = sbx_config(host_browser=True)
-        config.sbx.enabled = False
-        with self.assertRaisesRegex(HostBrowserError, "requires Docker Sandboxes"):
-            validate_host_browser(config)
-
-    def test_validate_requires_chrome_devtools_kit(self):
-        with self.assertRaisesRegex(HostBrowserError, f"kits add {KIT_CHROME_DEVTOOLS}"):
-            validate_host_browser(sbx_config(kits=[], host_browser=True))
-
-    def test_kit_args_carry_host_port(self):
-        self.assertEqual(host_browser_kit_args(sbx_config()), [f"{KIT_CHROME_HOST}.host_port=9333"])
-
-    def test_resolve_run_kits_appends_extra_kits(self):
-        resolved = resolve_run_kits(sbx_config(), extra_kits=[KIT_CHROME_HOST])
-        self.assertTrue(resolved[0].endswith(os.path.join("kits", "claude")))
-        self.assertTrue(resolved[-1].endswith(os.path.join("kits", KIT_CHROME_HOST)))
-
-    def test_resolve_run_kits_uses_agy_mixin_next_to_other_primary(self):
-        resolved = resolve_run_kits(sbx_config(kits=["agy", KIT_CHROME_DEVTOOLS]))
-        self.assertIn(AGY_MIXIN_KIT_URL, resolved)
-        self.assertNotIn(DEFAULT_SBX_KIT_URL, resolved)
-
-    def test_resolve_run_kits_passes_agy_workload_as_agent_not_kit(self):
-        config = sbx_config(agent="agy", kits=[KIT_CHROME_DEVTOOLS])
-        resolved = resolve_run_kits(config)
-        self.assertEqual(config.agent_spec.sbx_agent_arg, DEFAULT_SBX_KIT_URL)
-        self.assertNotIn(DEFAULT_SBX_KIT_URL, resolved)
-        self.assertNotIn(AGY_MIXIN_KIT_URL, resolved)
-
-    def test_run_up_new_sandbox_starts_browser_and_adds_kit(self):
-        config = sbx_config(host_browser=True)
-        with patch("agy_sandbox.engine.SbxRunner.check_sbx_availability"), \
-             patch("agy_sandbox.engine.sandbox_exists", return_value=False), \
-             patch("agy_sandbox.engine.build_project_image", return_value="img"), \
-             patch.object(HostBrowser, "start") as mock_start, \
-             patch("agy_sandbox.engine.run_up_sbx") as mock_run:
-            run_up(config)
-        mock_start.assert_called_once()
-        kwargs = mock_run.call_args[1]
-        self.assertEqual(kwargs["extra_kits"], [KIT_CHROME_HOST])
-        self.assertEqual(kwargs["kit_args"], [f"{KIT_CHROME_HOST}.host_port=9333"])
-
-    def test_run_up_without_switch_leaves_browser_alone(self):
-        with patch("agy_sandbox.engine.SbxRunner.check_sbx_availability"), \
-             patch("agy_sandbox.engine.sandbox_exists", return_value=False), \
-             patch("agy_sandbox.engine.build_project_image", return_value="img"), \
-             patch.object(HostBrowser, "start") as mock_start, \
-             patch("agy_sandbox.engine.run_up_sbx") as mock_run:
-            run_up(sbx_config())
-        mock_start.assert_not_called()
-        self.assertEqual(mock_run.call_args[1]["extra_kits"], [])
-
-    def test_existing_sandbox_without_host_kit_requires_rebuild(self):
-        with patch("agy_sandbox.engine.sandbox_has_env", return_value=False):
-            with self.assertRaisesRegex(HostBrowserError, "--host-browser --rebuild"):
-                check_existing_sandbox_host_browser(sbx_config(host_browser=True))
-
-    def test_existing_sandbox_with_host_kit_is_accepted(self):
-        with patch("agy_sandbox.engine.sandbox_has_env", return_value=True):
-            check_existing_sandbox_host_browser(sbx_config(host_browser=True))
-
-    def test_existing_host_sandbox_without_switch_only_warns(self):
-        with patch("agy_sandbox.engine.sandbox_has_env", return_value=True), patch("builtins.print") as mock_print:
-            check_existing_sandbox_host_browser(sbx_config())
-        self.assertIn("--host-browser", mock_print.call_args[0][0])
 
 
 class TestChromeHostRelay(unittest.TestCase):

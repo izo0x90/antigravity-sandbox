@@ -22,6 +22,16 @@ version: "1.0.0"
 displayName: Codex
 description: OpenAI Codex CLI, OpenAI's agentic coding CLI.
 
+# agy-sandbox addition: the login mode is an explicit kit argument instead of
+# being inferred from whether a host secret happens to exist. In sandbox-local
+# mode the install hook behaves as if SBX_CRED_OPENAI_MODE were `none`, so
+# Codex prompts for its own login inside the sandbox.
+args:
+  auth_mode:
+    default: "sandbox-local"
+    description: sandbox-local (log in inside the sandbox) or proxy-managed (host-held sbx secret via the proxy)
+    pattern: '^(sandbox-local|proxy-managed)$'
+
 # Credentials: omitted. The built-in `shell` sandbox these mixins compose onto already
 # defines the proxy credentials for openai, and sbx
 # rejects a service defined in two kits ("credential for service X defined in both").
@@ -151,6 +161,7 @@ setup:
         # front so nothing later has to create them as root.
         mkdir -p /home/agent/.codex /home/agent/.agents
         MODE="${SBX_CRED_OPENAI_MODE:-none}"
+        [ "${{ kit.args.auth_mode }}" = proxy-managed ] || MODE=none
         cat > /home/agent/.codex/config.toml << 'EOF'
         # Codex configuration for a Docker sandbox.
         # The container is the sandbox, so Codex's own approval gate and
@@ -197,7 +208,7 @@ setup:
             ;;
         esac
       user: "agent"
-      description: Seed Codex config/auth from SBX_CRED_OPENAI_MODE
+      description: Seed Codex config/auth from auth_mode and SBX_CRED_OPENAI_MODE
   startup:
     # CODEX_HOME (~/.codex) is created agent-owned by the Dockerfile and
     # re-ensured by the install hook above, which runs pre-launch as the agent

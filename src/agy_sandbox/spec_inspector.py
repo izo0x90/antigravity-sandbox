@@ -4,10 +4,11 @@ import re
 import subprocess
 from typing import Any, Dict, Optional
 
+from .agents import AgentSpec
 from .constants import (
+    AUTH_MODE_SANDBOX_LOCAL,
     DEFAULT_BUILD_ARGS,
     DEFAULT_ENV_VARS,
-    AgentSpec,
     slugify_project_name,
 )
 
@@ -207,8 +208,8 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
             pass
 
     agent = explicit.get("agent", "agy")
-    sbx_enabled = explicit.get("sbx", False)
     clone_enabled = explicit.get("clone", False)
+    auth_mode = explicit.get("auth_mode", AUTH_MODE_SANDBOX_LOCAL)
     kits = list(explicit.get("kits", []))
 
     # Smart kit auto-detection during offline scan
@@ -236,12 +237,10 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
         "build_args": build_args,
         "setup_scripts": setup_scripts,
         "env": env_vars,
-        "sbx": {
-            "enabled": sbx_enabled,
-            "agent": agent,
-            "clone": clone_enabled,
-            "kits": kits,
-        },
+        "agent": agent,
+        "kits": kits,
+        "auth_mode": auth_mode,
+        "clone": clone_enabled,
         "recommendations": {
             "dockerfile_needed": False,
             "reason": "Offline local inspection generated spec from project manifests.",
@@ -259,7 +258,7 @@ def run_read_only_agent_analysis(
     Executes an agent harness in strict read-only / plan mode, captures stdout,
     and returns the parsed BoxSpec dictionary.
     """
-    full_cmd = spec.get_read_only_cmd(prompt, cwd)
+    full_cmd = spec.read_only_cmd(prompt, cwd)
     if not full_cmd:
         return None
 
