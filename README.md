@@ -8,19 +8,27 @@
 
 # agy-sandbox
 
-The quickest and easiest way to spin up sandboxed development environments using Docker Sandboxes (`sbx`) with all native toolchains and agent dependencies pre-installed.
+The quickest way to spin up sandboxed development environments for terminal AI coding agents on
+Docker Sandboxes (`sbx`), with your toolchains and agent harnesses pre-installed.
 
-`agy-sandbox` provisions profile-isolated microVM sandboxes for terminal AI coding agents and interactive development. It bridges custom Docker image building with Docker Sandbox security:
+`agy-sandbox` builds a custom Docker image for your project, loads it into `sbx` as a template, and
+runs it as an isolated microVM with one or more agent harnesses installed side by side:
 
-- **Custom Docker Images in Sandboxes**: Build custom project images (`Dockerfile.agy` or base layers) with any native build dependencies, system packages, or toolchains installed, and run them inside isolated microVM sandboxes (`sbx`).
-- **Full Development & Agent Runtimes**: Out-of-the-box support for AI coding agents (Google Antigravity, Anthropic Claude Code, OpenCode CLI, OpenAI Codex CLI, Oh My Pi) alongside native compilers (`rustc`, `gcc`), runtimes (`python3`, `node`, `mojo`), and package managers (`uv`, `npm`, `cargo`, `pixi`).
-- **Profile-Isolated Workspaces**: Separate logins, tokens, and microVM instances per project and profile, preventing credential bleed across client environments.
-- **Active State Protection**: Code Guardian automatically detects active TUI sessions and uncommitted code before container destruction.
+- **Custom images in sandboxes**: `Dockerfile.agy` (or the default) with any native dependencies,
+  runtimes and system packages, run inside an `sbx` microVM.
+- **Every agent, the same way**: Google Antigravity, Claude Code, OpenCode, Codex, Oh My Pi and
+  Prime Agent are each a stacked image layer plus a bundled kit on `sbx`'s shell sandbox. Install
+  one or five; they all launch identically.
+- **One login switch**: `auth_mode: sandbox-local` (log in inside the sandbox) or
+  `auth_mode: proxy-managed` (credentials stay on the host in `sbx secret`, the sandbox proxy
+  injects them).
+- **Ports, host browser, guardian**: publish sandbox ports to the host, let agents drive a Chrome
+  on your machine, and get warned before destroying a sandbox with unsaved work or live logins.
 
 ## Prerequisites
 
-- **Docker:** Installed and running (Docker Desktop with Docker Sandboxes / `sbx` enabled).
-- **uv:** For global Python CLI installation.
+- **Docker Desktop** with Docker Sandboxes (`sbx`) enabled and `sandboxd` running.
+- **uv** for installing the CLI.
 
 ## Installation
 
@@ -28,162 +36,157 @@ The quickest and easiest way to spin up sandboxed development environments using
 uv tool install -e .
 ```
 
-## Usage & Commands
-
-### ⚡ Quick Start: Smart Auto-Init (`auto-init`)
-
-Stop writing config files by hand. `agy-sandbox auto-init` inspects your codebase in **strict read-only mode** and automatically builds a lean, tailor-made `agy.yaml` specification for your project.
+## Quick start
 
 ```bash
-# Auto-detect project runtimes and generate agy.yaml
-agy-sandbox auto-init
+# Inspect the project read-only and write agy.yaml (falls back to an offline manifest scan)
+agy-sandbox auto-init --agent claude,opencode
 
-# Auto-init with specific container agent harnesses (first agent is primary)
-agy-sandbox auto-init --agent opencode,omp,prime-agent
+# Build the image, load it into sbx, create the sandbox and attach
+agy-sandbox up
 
-# Use Claude on the host for codebase analysis, but install OpenCode & Prime in container
-agy-sandbox auto-init --analyzer claude --agent opencode,prime-agent
+# Later: resume, publishing a port and using a Chrome on the host
+agy-sandbox up -p 3000:3000 --host-browser
+
+# Stop and remove (the guardian checks for unsaved work first)
+agy-sandbox down
 ```
-
-#### How `auto-init` Works:
-1. **Read-Only Codebase Analysis**: Uses `--analyzer <agent>` (or defaults to your first `--agent`) to run a read-only analysis of manifest files (`pyproject.toml`, `package.json`, `Cargo.toml`, `pixi.toml`, `mojoproject.toml`) in plan mode—zero edits or file changes allowed.
-2. **Zero-Crash Offline Fallback**: If no AI agent CLI is found on `$PATH`, `agy-sandbox` falls back to its built-in offline manifest scanner to build the spec deterministically.
-3. **Lean Runtime Infiltration**: Only language runtimes actually used by your project are included under `build_args`. A pure Python app gets `PYTHON_VERSION`; a Node app gets `NODE_VERSION`. Unused runtimes are completely omitted.
-4. **Explicit Flag Precedence**: Any CLI flags you pass (`--agent`, `--analyzer`, `--sbx`, `--clone`, `--dockerfile`, `--with-kit`) strictly override inferred spec fields.
-5. **Host-Side Spec Writer**: The AI agent returns a clean JSON spec to stdout, and the host `agy-sandbox` tool writes `agy.yaml` (and optional `Dockerfile.agy`).
-
-### 🛠️ CLI Command Reference
-
-- `agy-sandbox init`  
-  Generates a manual template `agy.yaml` in your project workspace.  
-  Options:
-  - `--agent <agents>`: Container agent harness(es) (comma-separated or repeated). The first agent is primary, and all listed agents are added as kits.
-  - `--sbx`: Enable Docker Sandboxes (`sbx`) mode.
-  - `--clone`: Enable isolated git clone mode inside the microVM.
-  - `--dockerfile`: Scaffold a local, customizable `Dockerfile.agy`.
-  - `--with-kit <kit>`: Seed a bundled or local mixin kit (e.g. `chrome-devtools`, `./my-custom-kit`).
-
-- `agy-sandbox auto-init`  
-  Smart spec builder. Inspects project manifests in read-only mode and outputs a lean `agy.yaml`.  
-  Options:
-  - `--analyzer <agent>`: Specify host AI agent for read-only codebase analysis (e.g. `opencode`, `claude`, `agy`). Host-only; not added to container kits unless also in `--agent`.
-  - `--agent <agents>`: Container agent harness(es) (e.g. `opencode,omp,prime-agent`). First agent is primary; all listed agents are added to `sbx.kits`.
-  - `--sbx`: Configure Docker Sandboxes (`sbx`) mode in auto-generated `agy.yaml`.
-  - `--clone`: Configure clone mode in auto-generated `agy.yaml`.
-  - `--dockerfile`: Scaffold a customizable `Dockerfile.agy` in project workspace.
-  - `--with-kit <kit>`: Add bundled or local mixin kit (can be repeated).
-
-- `agy-sandbox up`  
-  Launches or resumes the sandbox microVM and attaches to the agent session.  
-  Use `--rebuild` to force rebuild custom images or template stores.  
-  Use `--host-browser` to start Chrome on the host and let sandboxed agents drive it instead of the in-sandbox Chromium (requires the `chrome-devtools` kit; see [Host Browser](#host-browser)).
-
-- `agy-sandbox down`  
-  Stops and removes the sandbox container for the current project. Scans for unsaved git changes or active TUI logins before destroying.
-
-- `agy-sandbox agents list`  
-  Lists all supported agent harnesses and their kit references.
-
-- `agy-sandbox agents add <name>`  
-  Configures an agent harness (`claude`, `opencode`, `codex`, `omp`, `shell`) in `agy.yaml`.
-
-- `agy-sandbox kits list`  
-  Lists available bundled mixin kits (`chrome-devtools`, `mojo-stdlib`, `omp`).
-
-- `agy-sandbox kits add <name>`  
-  Appends a mixin kit to your project's `agy.yaml`.
-
-- `agy-sandbox update-base`  
-  Pulls the latest Antigravity engine and CLI from Google and bakes them into `agy-base:latest`.
 
 ## Configuration (`agy.yaml`)
 
 ```yaml
 profile: default
 project_name: my_app
-agent: claude
-auth_mode: sbx_persistent  # 'sbx_persistent' or 'sbx_proxy'
+agent: claude                  # primary agent; its kit is always attached
+kits:                          # agent kits and mixin kits (bundled names, local dirs or git+/oci refs)
+  - claude
+  - opencode
+  - chrome-devtools
+auth_mode: sandbox-local       # or proxy-managed
+clone: true                    # work on a private in-VM clone instead of a bind mount
+ports:                         # published to the host (sbx port spec)
+  - "3000:3000"
+host_browser:                  # optional; `up --host-browser` turns it on for one run
+  enabled: false
+  port: 9222
+  headless: false
+kit_args:                      # optional; passed through to `sbx run --kit-arg`
+  agy-proxy.auth_method: gcp
 build_args:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
   NODE_VERSION: "20"
-  RUST_VERSION: "stable"
-  MOJO_VERSION: "latest"
-setup_scripts:
-  - npm install
-  - pip install -r requirements.txt
-env:
+setup_scripts:                 # run once inside the VM when the sandbox is created
+  - uv sync
+env:                           # applied to every session
   - ENVIRONMENT=development
-use_native_login: false
-sbx:
-  enabled: true
-  agent: claude
-  clone: true
-  kits:
-    - claude
-    - opencode
-    - chrome-devtools
 ```
 
-### Supported Agent Harnesses
+`env` values are passed to `sbx run -e`, so changing them takes effect on the next `up` without a
+rebuild. `setup_scripts` become a generated mixin kit whose install hook runs them in the workspace
+when the sandbox is created, so changing them needs `up --rebuild`.
 
-| Identifier | Display Name | Entrypoint | SBX Secret Services | Session Guard Target |
-| :--- | :--- | :--- | :--- | :--- |
-| `agy` | Google Antigravity | `gemini` | `google` | `/root/.gemini` |
-| `claude` | Anthropic Claude Code | `claude` | `anthropic` | `/home/agent/.claude.json` |
-| `opencode` | OpenCode CLI | `opencode` | `openrouter`, `anthropic`, `openai`, `google` | `/home/agent/.config/opencode/auth.json` |
-| `codex` | OpenAI Codex CLI | `codex` | `openai` | `/home/agent/.codex/auth.json` |
-| `omp` | Oh My Pi Harness | `shell` | *(none)* | `/home/agent/.omp` |
-| `prime-agent` | Prime Agent (RLM / Pi) | `prime-agent` | `prime`, `anthropic`, `openai`, `google` | `/home/agent/.prime` |
-| `shell` | Interactive Shell | `shell` | *(none)* | *(cloned git changes)* |
+### Upgrading a pre-0.5 `agy.yaml`
 
-## Bundled Mixin Kits
+Older files nested most settings under `sbx:` and carried `use_native_login`, `workspace_path` and
+`auth_mode: sbx_persistent | sbx_proxy`. They still load; every command prints a warning naming what
+changed, and this rewrites the file in the current layout:
 
-- **`chrome-devtools`**: Spawns headless Chromium with `chrome-devtools-mcp` server for browser automation and CDP debugging.
-- **`omp`**: Terminal AI coding agent and tool harness (Oh My Pi). Pre-baked into stacked `agy-base-omp:latest`.
-- **`prime-agent`**: Self-improving RLM coding and research agent harness by Prime Intellect. Pre-baked into stacked `agy-base-prime:latest` with Node.js 22.
-- **`mojo-stdlib`**: Installs Bazelisk/Bazel launcher and LLVM `lit` test runner for compiling and testing `modularml/mojo`.
-- **`chrome-host`**: Added automatically by `up --host-browser`; relays `127.0.0.1:9222` in the sandbox to the host Chrome.
-
-### Host Browser
-
-`agy-sandbox up --host-browser` starts Chrome on the host (or reuses one already listening on the port) with a dedicated
-profile under `~/.agy-sandbox/host-browser/<sandbox>/`, and adds the `chrome-host` kit. Inside the sandbox a relay serves
-the host Chrome on `127.0.0.1:9222`, so every harness (Claude, AGY, OMP, ...) uses the same address as with the
-in-sandbox Chromium. `agy-sandbox down` stops a browser it started. To enable it by default:
-
-```yaml
-sbx:
-  host_browser:
-    enabled: true
-    port: 9222      # remote debugging port on the host
-    headless: false
+```bash
+agy-sandbox config migrate
 ```
 
-Kits are fixed when a sandbox is created, so switching an existing sandbox to the host browser needs `--rebuild`.
+| Before (0.4)                   | Now (0.5)                                          |
+| :----------------------------- | :------------------------------------------------- |
+| `sbx.enabled: true/false`      | gone; `sbx` is the only runtime                    |
+| `sbx.agent`, `sbx.kits`, `sbx.clone`, `sbx.ports`, `sbx.host_browser` | top-level `agent`, `kits`, `clone`, `ports`, `host_browser` |
+| `use_native_login`             | gone; see `auth_mode`                              |
+| `auth_mode: sbx_persistent`    | `auth_mode: sandbox-local`                         |
+| `auth_mode: sbx_proxy`         | `auth_mode: proxy-managed`                         |
+| `workspace_path`               | gone; `sbx` mounts the workspace at its host path  |
+| `init --sbx`, `auto-init --sbx` | gone                                              |
 
-## 🛡️ Code Guardian & Session Safeguards
+## Login modes
 
-`agy-sandbox` guards your active sessions and uncommitted code before sandbox destruction:
-- **Active Auth Sessions**: Scans container microVMs for session files (`.claude.json`, `.config/opencode/auth.json`, `.codex/auth.json`, `.gemini`, `.omp`, `.prime`).
-- **Uncommitted Code**: For cloned sandboxes (`sbx.clone: true`), checks `git status`, unpushed commits (`git cherry`), and local-only branches.
-- **Interactive Guard Prompt**: Triggers a confirmation prompt (`[y/N]`) before `up --rebuild` or `down` deletes active sessions or uncommitted work.
+Both modes use the same mechanism for every agent: the wrapper passes `auth_mode` to each bundled
+agent kit as a kit argument, and the kit's setup hook does the right thing for its agent.
 
-## 🔐 Profile-Isolated Environments
+**`sandbox-local`** (default). You log in inside the sandbox (`agy`, `claude /login`, `codex`,
+`opencode auth login`), exactly as on a normal machine. The real token lives in the sandbox and
+nothing intercepts it. GCP / Gemini Enterprise logins for Antigravity work because the kit's network
+policy includes the license host. Kits never write `proxy-managed` placeholders in this mode, even
+if you have global `sbx` secrets stored.
 
-Logins and state are isolated per profile and project:
-- Sandbox microVMs use profile-aware naming: `agy-sandbox-<project>` (default) or `agy-sandbox-<project>--<profile>`.
-- Token stores are isolated on the host under `~/.<agent>_<profile>`.
-- Set `auth_mode: sbx_proxy` to route API requests through SBX secret proxies (`sbx secret set <sandbox> <service>`).
+**`proxy-managed`**. Credentials live on the host in `sbx secret`; the sandbox only ever sees a
+placeholder that the `sbx` proxy swaps for the real value on outbound requests. For Claude, Codex
+and OpenCode this is `sbx`'s built-in credential proxy. For Antigravity, whose Google OAuth is not a
+built-in `sbx` service, the wrapper attaches the bundled `agy-proxy` kit, which declares that
+credential. `up` tells you which secrets are missing:
 
-## 🔄 Changes & Migration (v1 -> v2)
+```bash
+sbx secret set anthropic --sandbox agy-sandbox-my-app
+sbx secret set google --sandbox agy-sandbox-my-app
+```
 
-| Feature | Legacy v1 | Current v2 |
-| :--- | :--- | :--- |
-| **Agent Support** | Google Antigravity only | 7 agent harnesses (`agy`, `claude`, `opencode`, `codex`, `omp`, `prime-agent`, `shell`) |
-| **MicroVM Naming** | `agy-sandbox-<project>` (collided across profiles) | `agy-sandbox-<project>--<profile>` (isolated per profile) |
-| **Host Profile Paths** | Hardcoded `~/.gemini_<profile>` | Dynamic per-agent (`~/.claude_<profile>`, `~/.opencode_<profile>`, etc.) |
-| **Kit Resolution** | Abstract kit strings prioritized | Local bundled kit directories in `kits/` resolved directly to disk paths |
-| **Data Protection** | Basic git status check | Active TUI login session files + full Git status checks |
+The rule is generic: when `auth_mode` is `proxy-managed` and a bundled kit named `<kit>-proxy`
+exists, it is attached next to `<kit>`.
+
+## CLI reference
+
+- `agy-sandbox init [--agent a,b] [--clone] [--auth MODE] [--dockerfile] [--with-kit KIT]`
+  Writes a template `agy.yaml`. The first agent is primary; all listed agents are added as kits.
+- `agy-sandbox auto-init [--analyzer AGENT] [same options as init]`
+  Runs a host agent in read-only mode to infer `build_args`, `setup_scripts`, `env` and kits, falling
+  back to an offline manifest scanner. Flags you pass win over what the analyzer inferred.
+- `agy-sandbox up [--rebuild] [--host-browser] [-p HOST:SANDBOX]`
+  Builds the image if needed, loads it into `sbx`, creates or resumes the sandbox and attaches.
+  Ports are published on creation and reconciled with `sbx ports` on resume.
+- `agy-sandbox down`
+  Removes the sandbox after the guardian check, and stops a host browser it started.
+- `agy-sandbox agents list` / `agy-sandbox kits list`
+- `agy-sandbox agents add NAME` / `agy-sandbox kits add NAME`
+  The same operation: an agent is a kit named after it. Adding `shell` only sets the primary agent.
+- `agy-sandbox config migrate`
+  Rewrites a pre-0.5 `agy.yaml` in the current layout.
+- `agy-sandbox update-base`
+  Rebuilds `agy-base:latest` from scratch, plus the current project's agent layers, so new CLI
+  releases are picked up.
+
+## Agent harnesses
+
+| Identifier    | Display name            | Image layer           | Kit             | Proxy services (proxy-managed)            |
+| :------------ | :---------------------- | :-------------------- | :-------------- | :---------------------------------------- |
+| `agy`         | Google Antigravity      | `Dockerfile.agy`      | `agy` (+ `agy-proxy`) | `google` via `agy-proxy`            |
+| `claude`      | Anthropic Claude Code   | `Dockerfile.claude`   | `claude`        | `anthropic`                               |
+| `opencode`    | OpenCode CLI            | `Dockerfile.opencode` | `opencode`      | `openrouter`, `anthropic`, `openai`, `google` |
+| `codex`       | OpenAI Codex CLI        | `Dockerfile.codex`    | `codex`         | `openai`                                  |
+| `omp`         | Oh My Pi Harness        | `Dockerfile.omp`      | `omp`           | none                                      |
+| `prime-agent` | Prime Agent (RLM)       | `Dockerfile.prime`    | `prime-agent`   | `prime`, `anthropic`, `openai`, `google`  |
+| `shell`       | Interactive Shell       | none                  | none            | none                                      |
+
+Images stack as `Dockerfile.base` → one `Dockerfile.<agent>` per requested agent → the project's
+`Dockerfile.agy` (or the packaged default), and the result is loaded into `sbx` as the template.
+
+## Bundled mixin kits
+
+- **`chrome-devtools`**: headless Chromium plus the `chrome-devtools-mcp` server for browser automation.
+- **`chrome-host`**: added by `up --host-browser`; relays `127.0.0.1:9222` in the sandbox to a Chrome on the host.
+- **`mojo-stdlib`**: Bazelisk and LLVM `lit` for `modularml/mojo` standard library work.
+- **`agy-proxy`**: Antigravity's proxy-managed Google OAuth credential; attached automatically.
+- The agent kits above.
+
+### Host browser
+
+`agy-sandbox up --host-browser` starts Chrome on the host (or reuses one listening on the port) with
+a dedicated profile under `~/.agy-sandbox/host-browser/<sandbox>/` and attaches the `chrome-host`
+kit, so every harness reaches it at the same `127.0.0.1:9222` address as the in-sandbox Chromium.
+Requires the `chrome-devtools` kit. Kits are fixed when a sandbox is created, so switching an
+existing sandbox needs `--rebuild`.
+
+## Code Guardian
+
+Before `up --rebuild` or `down`, one `sbx exec` inside the sandbox reports login/session files for
+every agent, and for clone-mode sandboxes any uncommitted files, unpushed commits and sandbox-only
+branches. You are asked to confirm before anything is destroyed.
 
 ## License
 
