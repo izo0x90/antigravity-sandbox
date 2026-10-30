@@ -45,6 +45,7 @@ class SbxConfig:
     agent: str = AGENT_AGY
     clone: bool = False
     kits: List[str] = field(default_factory=list)
+    ports: List[str] = field(default_factory=list)
     host_browser: HostBrowserConfig = field(default_factory=HostBrowserConfig)
 
 
@@ -152,12 +153,15 @@ class AgyConfig:
             sbx_enabled = True
 
         sbx_kits = sbx_dict.get("kits") or []
+        raw_ports = sbx_dict.get("ports") or data.get("ports") or []
+        sbx_ports = [str(p) for p in raw_ports if p]
 
         sbx = SbxConfig(
             enabled=sbx_enabled,
             agent=raw_agent,
             clone=sbx_dict.get("clone", False),
             kits=sbx_kits,
+            ports=sbx_ports,
             host_browser=HostBrowserConfig.from_dict(sbx_dict.get("host_browser")),
         )
         return cls(
@@ -201,7 +205,9 @@ def save_config(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> None:
             "kits": config.sbx.kits,
         },
     }
-    # Only persist host_browser once it differs from the defaults, to keep generated configs minimal
+    # Only persist ports and host_browser once they differ from the defaults, to keep generated configs minimal
+    if config.sbx.ports:
+        data["sbx"]["ports"] = list(config.sbx.ports)
     if config.sbx.host_browser != HostBrowserConfig():
         data["sbx"]["host_browser"] = config.sbx.host_browser.to_dict()
     if config.workspace_path is not None:

@@ -1,5 +1,6 @@
 import io
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,7 @@ from agy_sandbox.constants import (
     AGENT_OMP,
     AGENT_OPENCODE,
     AGENT_SHELL,
+    DEFAULT_CMD_TIMEOUT,
     DEFAULT_SBX_KIT_URL,
 )
 from agy_sandbox.git_guardian import check_for_unsaved_sandbox_work
@@ -215,6 +217,46 @@ class TestE2EFullSuite(unittest.TestCase):
         DockerRunner.stop_container(config)
         mock_run.assert_any_call(["docker", "stop", config.container_name], capture_output=True)
         mock_run.assert_any_call(["docker", "rm", config.container_name], capture_output=True)
+
+    @patch("subprocess.run")
+    @patch("shutil.which", return_value="/usr/local/bin/sbx")
+    def test_phase5_port_publishing(self, mock_which, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="Status: running\n")
+        config = AgyConfig.from_dict({
+            "project_name": "cad_work",
+            "agent": "agy",
+            "sbx": {
+                "enabled": True,
+                "agent": "agy",
+                "clone": False,
+                "ports": ["3000:3000"],
+            },
+        })
+        self.assertEqual(config.sbx.ports, ["3000:3000"])
+        self.assertFalse(config.sbx.clone)
+
+        # New sandbox creation passes --publish 3000:3000 and omits --clone
+        with patch("agy_sandbox.runners.sbx.sandbox_exists", return_value=False), \
+             patch("agy_sandbox.runners.sbx.get_local_image_id", return_value="123456789012"), \
+             patch("agy_sandbox.runners.sbx.is_image_loaded_in_sbx", return_value=True):
+            SbxRunner.run_sandbox(config, image_name="cad-image", rebuild=False)
+            run_cmd = mock_run.call_args_list[-1][0][0]
+            self.assertIn("--publish", run_cmd)
+            self.assertIn("3000:3000", run_cmd)
+            self.assertNotIn("--clone", run_cmd)
+
+        # Resuming existing sandbox runs sbx ports <name> --publish 3000:3000
+        mock_run.reset_mock()
+        mock_run.return_value = MagicMock(returncode=0, stdout="Status: running\n")
+        with patch("agy_sandbox.runners.sbx.sandbox_exists", return_value=True):
+            SbxRunner.run_sandbox(config, image_name="cad-image", rebuild=False)
+            mock_run.assert_any_call(
+                ["sbx", "ports", config.sandbox_name, "--publish", "3000:3000"],
+                capture_output=True,
+                text=True,
+                timeout=DEFAULT_CMD_TIMEOUT,
+                stdin=subprocess.DEVNULL,
+            )
 
 
 if __name__ == "__main__":

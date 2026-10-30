@@ -231,6 +231,24 @@ class SbxRunner:
                 pass
 
     @classmethod
+    def ensure_ports_published(cls, sandbox_name: str, ports: Sequence[str]) -> None:
+        if not ports:
+            return
+        cmd = ["sbx", "ports", sandbox_name]
+        for port_spec in ports:
+            cmd.extend(["--publish", port_spec])
+        print(f"Ensuring published ports on sandbox '{sandbox_name}': {', '.join(ports)}...")
+        try:
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=DEFAULT_CMD_TIMEOUT, stdin=subprocess.DEVNULL
+            )
+            if res.returncode != 0:
+                err_msg = res.stderr.strip() if res.stderr else f"exit code {res.returncode}"
+                print(f"⚠️ Warning: Could not update published ports via 'sbx ports': {err_msg}")
+        except subprocess.SubprocessError as e:
+            print(f"⚠️ Warning: Could not update published ports via 'sbx ports': {e}")
+
+    @classmethod
     def run_sandbox(
         cls,
         config: AgyConfig,
@@ -251,6 +269,7 @@ class SbxRunner:
             exists = False
 
         if exists and not rebuild:
+            cls.ensure_ports_published(sandbox_name, config.sbx.ports)
             print(f"Resuming existing sandbox container '{sandbox_name}'...")
             print("💡 Note: To rebuild with updated Docker image or kits, run with '--rebuild'.")
             run_cmd = ["sbx", "run", "--name", sandbox_name]
@@ -277,6 +296,9 @@ class SbxRunner:
             "--template",
             f"{image_name}:latest",
         ]
+
+        for port_spec in config.sbx.ports:
+            run_cmd.extend(["--publish", port_spec])
 
         for kit_path in resolve_run_kits(config, extra_kits):
             run_cmd.extend(["--kit", kit_path])

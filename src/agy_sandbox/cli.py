@@ -260,6 +260,10 @@ def up_command(args: argparse.Namespace) -> None:
     if args.host_browser:
         config.sbx.host_browser.enabled = True
 
+    for port_spec in getattr(args, "publish", None) or []:
+        if port_spec and port_spec not in config.sbx.ports:
+            config.sbx.ports.append(port_spec)
+
     run_up(config, rebuild=args.rebuild)
 
 
@@ -406,6 +410,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--host-browser",
         action="store_true",
         help="Start Chrome on the host and let sandboxed agents drive it (overrides sbx.host_browser.enabled)",
+    )
+    up_parser.add_argument(
+        "-p",
+        "--publish",
+        action="append",
+        default=[],
+        help="Publish a sandbox port to the host (e.g. 3000:3000). Overrides or appends to sbx.ports.",
     )
     up_parser.set_defaults(func=up_command)
 

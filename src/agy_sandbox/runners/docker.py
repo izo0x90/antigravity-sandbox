@@ -218,6 +218,9 @@ class DockerRunner:
             workspace_path,
         ]
 
+        for port_spec in config.sbx.ports:
+            run_cmd.extend(["-p", port_spec])
+
         for env_var in config.env:
             run_cmd.extend(["-e", env_var])
 
