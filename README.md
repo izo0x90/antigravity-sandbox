@@ -140,6 +140,9 @@ exists, it is attached next to `<kit>`.
 - `agy-sandbox up [--rebuild] [--host-browser] [-p HOST:SANDBOX]`
   Builds the image if needed, loads it into `sbx`, creates or resumes the sandbox and attaches.
   Ports are published on creation and reconciled with `sbx ports` on resume.
+- `agy-sandbox upgrade [--host-browser] [-p HOST:SANDBOX]`
+  Applies `agy.yaml` changes to the existing sandbox without losing anything inside it. See
+  [Upgrading a sandbox](#upgrading-a-sandbox-without-losing-its-contents).
 - `agy-sandbox down`
   Removes the sandbox after the guardian check, and stops a host browser it started.
 - `agy-sandbox agents list` / `agy-sandbox kits list`
@@ -180,7 +183,41 @@ Images stack as `Dockerfile.base` → one `Dockerfile.<agent>` per requested age
 a dedicated profile under `~/.agy-sandbox/host-browser/<sandbox>/` and attaches the `chrome-host`
 kit, so every harness reaches it at the same `127.0.0.1:9222` address as the in-sandbox Chromium.
 Requires the `chrome-devtools` kit. Kits are fixed when a sandbox is created, so switching an
-existing sandbox needs `--rebuild`.
+existing sandbox is done with `agy-sandbox upgrade --host-browser`, which keeps its contents.
+
+## Upgrading a sandbox without losing its contents
+
+A long-running sandbox accumulates state that is not in any config: packages the agent installed,
+tools it built, dotfiles it wrote. `up --rebuild` throws all of that away. `agy-sandbox upgrade`
+does not. It applies the current `agy.yaml` (added or removed kits, a different `auth_mode`, `env`,
+`ports`, the host browser) to the existing sandbox and keeps everything inside it.
+
+`sbx` keeps a sandbox in three places, and `upgrade` carries each one over explicitly:
+
+| What                        | How it survives                                                            |
+| :-------------------------- | :------------------------------------------------------------------------- |
+| the container filesystem    | `sbx template save` snapshots it; the new sandbox is created from that snapshot |
+| kit volumes (e.g. Claude sessions) | copied out with `sbx cp` before `sbx rm` deletes them, copied back after |
+| the clone-mode workspace    | same, including its git history and uncommitted changes                   |
+
+The snapshot is kept as `<image>:upgrade-<timestamp>` until the next upgrade, so a bad upgrade can
+be rolled back with `sbx create --name <sandbox> --template <snapshot> --pull never shell <path>`.
+If recreation fails, `upgrade` prints that command with the right values.
+
+What an upgrade cannot do: merge a new image into an existing filesystem. A changed
+`Dockerfile.agy` or `build_args` still needs `up --rebuild`. Likewise an agent added to `agy.yaml`
+after creation gets its kit, but its binary lives in the image layer; `upgrade` tells you when a
+requested agent is not installed in the sandbox.
+
+`up` on an existing sandbox reports when `agy.yaml` kits differ from the sandbox and points to
+`upgrade`. Kits re-run their install hooks on the snapshot, which is what the bundled kits are
+written for (settings are seeded only when missing, placeholders only in proxy-managed mode).
+
+### Sandbox-local logins and host secrets
+
+The built-in `sbx` shell injects `<SERVICE>_API_KEY=proxy-managed` placeholders for every service
+it knows, whether or not a secret is stored. In `sandbox-local` mode `agy-sandbox` blanks those on
+every session (`sbx run -e VAR=`), so no agent silently uses a host key you did not ask for.
 
 ## Code Guardian
 

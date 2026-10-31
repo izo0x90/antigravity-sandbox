@@ -195,6 +195,19 @@ def up_command(args: argparse.Namespace) -> None:
         sys.exit(code)
 
 
+def upgrade_command(args: argparse.Namespace) -> None:
+    print("Running upgrade command...")
+    config = load_or_fail()
+    if args.host_browser:
+        config.host_browser.enabled = True
+    for port in args.publish or []:
+        if port and port not in config.ports:
+            config.ports.append(port)
+    code = engine.upgrade(config)
+    if code != 0:
+        sys.exit(code)
+
+
 def down_command(args: argparse.Namespace) -> None:
     print("Running down command...")
     config = load_or_fail()
@@ -277,10 +290,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=auto_init_command)
 
     p = sub.add_parser("up", help="Create or resume the sandbox and attach to it")
-    p.add_argument("--rebuild", action="store_true", help="Rebuild the image and recreate the sandbox")
+    p.add_argument("--rebuild", action="store_true", help="Rebuild the image and recreate the sandbox from scratch (see 'upgrade' to keep its contents)")
     p.add_argument("--host-browser", action="store_true", help="Drive a Chrome on the host from the sandbox")
     p.add_argument("-p", "--publish", action="append", default=[], help="Publish a sandbox port to the host (e.g. 3000:3000)")
     p.set_defaults(func=up_command)
+
+    p = sub.add_parser(
+        "upgrade",
+        help="Apply agy.yaml changes (kits, auth_mode, env, ports, host browser) to the existing sandbox, keeping everything inside it",
+    )
+    p.add_argument("--host-browser", action="store_true", help="Drive a Chrome on the host from the sandbox")
+    p.add_argument("-p", "--publish", action="append", default=[], help="Publish a sandbox port to the host (e.g. 3000:3000)")
+    p.set_defaults(func=upgrade_command)
 
     p = sub.add_parser("down", help="Stop and remove the sandbox")
     p.set_defaults(func=down_command)
@@ -308,6 +329,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # Progress lines are interleaved with sbx's own output; keep them in order even when piped.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     raw_argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(preprocess_unquoted_comma_args(raw_argv))
     try:

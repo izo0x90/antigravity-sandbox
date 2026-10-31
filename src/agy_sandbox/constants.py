@@ -28,6 +28,23 @@ PROXY_KIT_SUFFIX = "-proxy"
 
 # sbx launches every sandbox as a plain shell; agents are mixin kits on top.
 SBX_AGENT = "shell"
+# The built-in shell sandbox injects these as `proxy-managed` placeholders for
+# every service sbx knows, whether or not a secret is stored. In sandbox-local
+# mode they are blanked on the session so no agent silently uses a host key.
+PROXY_PLACEHOLDER_ENV = (
+    "ANTHROPIC_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "NEBIUS_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "XAI_API_KEY",
+)
+# `agy-sandbox upgrade` snapshots the sandbox as <image>:<UPGRADE_TAG_PREFIX><timestamp>
+UPGRADE_TAG_PREFIX = "upgrade-"
+UPGRADE_STAGING_DIR = f"{STATE_DIR}/upgrades"
 
 # Bundled kit names referenced by code
 KIT_CHROME_DEVTOOLS = "chrome-devtools"
@@ -45,6 +62,8 @@ DEFAULT_CMD_TIMEOUT = 10
 REMOVE_CMD_TIMEOUT = 15
 # `sbx exec` starts a stopped sandbox first, which runs every kit's startup hooks
 SANDBOX_EXEC_TIMEOUT = 300
+# Snapshots and file copies scale with the sandbox; no timeout, only stdin closed
+SNAPSHOT_TIMEOUT = None
 DAEMON_PREFLIGHT_TIMEOUT = 5
 BANNER_WIDTH = 78
 EXIT_CODE_INTERRUPTED = 130

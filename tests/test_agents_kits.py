@@ -10,7 +10,16 @@ from agy_sandbox import kits
 from agy_sandbox.agents import AGENT_SPECS, discover_available_agent
 from agy_sandbox.config import AgyConfig
 from agy_sandbox.images import dockerfile_path
-from agy_sandbox.kits import KITS_DIR, bundled_kit_dir, kit_args, list_bundled_kits, resolve_kit, run_kits, write_project_kit
+from agy_sandbox.kits import (
+    KITS_DIR,
+    bundled_kit_dir,
+    kit_args,
+    kit_volume_paths,
+    list_bundled_kits,
+    resolve_kit,
+    run_kits,
+    write_project_kit,
+)
 
 AUTH_MODE_KITS = ("agy", "claude", "codex", "opencode")
 
@@ -107,6 +116,15 @@ class TestKitResolution(unittest.TestCase):
         self.assertIn("businessaicode.googleapis.com", agy["permissions"]["network"]["allow"])
         self.assertEqual(agy["schemaVersion"], "2")
         self.assertEqual(agy["kind"], "mixin")
+
+
+class TestKitVolumes(unittest.TestCase):
+    def test_volume_paths_from_local_kits_only(self):
+        paths = kit_volume_paths([str(KITS_DIR / "claude"), str(KITS_DIR / "omp"), "git+https://x/y.git", "/nope"])
+        self.assertIn("/home/agent/.claude/projects", paths)
+        self.assertIn("/home/agent/.claude/sessions", paths)
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertEqual(kit_volume_paths([str(KITS_DIR / "omp")]), [])
 
 
 class TestProjectKit(unittest.TestCase):

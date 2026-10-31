@@ -47,21 +47,43 @@ class TestSbxWrapper(unittest.TestCase):
         with patch("subprocess.run", return_value=completed(SECRETS)):
             self.assertEqual(sandbox.stored_secret_services("agy-sandbox-demo"), {"anthropic", "google"})
 
-    def test_create_and_attach_command(self):
+    def test_create_command(self):
         with patch("subprocess.run", return_value=completed()) as run:
-            sandbox.create_and_attach(
-                "agy-sandbox-demo", "img", kits=["/k/claude", "/k/agy-proxy"], kit_args=["claude.auth_mode=proxy-managed"],
-                env=["A=1"], ports=["3000:3000"], clone=True,
+            sandbox.create(
+                "agy-sandbox-demo", "img:latest", "/work", kits=["/k/claude", "/k/agy-proxy"],
+                kit_args=["claude.auth_mode=proxy-managed"], env=["A=1"], ports=["3000:3000"], clone=True,
             )
         cmd = run.call_args[0][0]
-        self.assertEqual(cmd[:5], ["sbx", "run", "--name", "agy-sandbox-demo", "--template"])
-        self.assertEqual(cmd[5], "img:latest")
-        self.assertEqual(cmd[-1], "shell")
+        self.assertEqual(cmd[:8], ["sbx", "create", "--name", "agy-sandbox-demo", "--template", "img:latest", "--pull", "never"])
+        self.assertEqual(cmd[-2:], ["shell", "/work"])
         self.assertIn("--clone", cmd)
         for pair in (["--kit", "/k/claude"], ["--kit", "/k/agy-proxy"], ["--kit-arg", "claude.auth_mode=proxy-managed"],
                      ["-e", "A=1"], ["--publish", "3000:3000"]):
             idx = cmd.index(pair[1])
             self.assertEqual(cmd[idx - 1], pair[0])
+        self.assertIs(run.call_args[1]["stdin"], subprocess.DEVNULL)
+        with patch("subprocess.run", return_value=completed(code=1)):
+            with self.assertRaises(SandboxError):
+                sandbox.create("agy-sandbox-demo", "img:latest", "/work", kits=[])
+
+    def test_snapshot_and_copy_helpers(self):
+        with patch("subprocess.run", return_value=completed()) as run, patch("os.makedirs"):
+            sandbox.stop_sandbox("s")
+            sandbox.save_template("s", "img:upgrade-1")
+            sandbox.remove_template("img:upgrade-0")
+            sandbox.copy_from_sandbox("s", "/home/agent/.claude/projects", "/staging/0")
+            sandbox.copy_to_sandbox("/staging/0/projects", "s", "/home/agent/.claude")
+            sandbox.exec_script("s", "chown -R agent:agent /x", user="root")
+        cmds = [c[0][0] for c in run.call_args_list]
+        self.assertEqual(cmds[0], ["sbx", "stop", "s"])
+        self.assertEqual(cmds[1], ["sbx", "template", "save", "s", "img:upgrade-1"])
+        self.assertEqual(cmds[2], ["sbx", "template", "rm", "-f", "img:upgrade-0"])
+        self.assertEqual(cmds[3], ["sbx", "cp", "s:/home/agent/.claude/projects", "/staging/0"])
+        self.assertEqual(cmds[4], ["sbx", "cp", "/staging/0/projects", "s:/home/agent/.claude"])
+        self.assertEqual(cmds[5], ["sbx", "exec", "-u", "root", "s", "sh", "-c", "chown -R agent:agent /x"])
+        with patch("subprocess.run", return_value=completed(code=1)):
+            with self.assertRaises(SandboxError):
+                sandbox.save_template("s", "x:y")
 
     def test_attach_passes_env(self):
         with patch("subprocess.run", return_value=completed()) as run:

@@ -88,6 +88,23 @@ def list_bundled_kits() -> List[Dict[str, str]]:
     return kits
 
 
+def kit_volume_paths(kit_refs: Sequence[str]) -> List[str]:
+    """
+    Mount paths of the volumes declared by local kits (bundled or directories). sbx keeps
+    these outside the container filesystem, so an upgrade carries them separately.
+    Remote kits cannot be read; their volumes are reported by name only.
+    """
+    paths: List[str] = []
+    for ref in kit_refs:
+        if ref.startswith(REMOTE_KIT_SCHEMES) or not os.path.isdir(ref):
+            continue
+        for volume in _load_spec(Path(ref)).get("volumes") or []:
+            path = volume.get("path") if isinstance(volume, dict) else None
+            if path and path not in paths:
+                paths.append(str(path))
+    return paths
+
+
 def kit_declares_arg(kit_dir: Path, arg: str) -> bool:
     args = _load_spec(kit_dir).get("args")
     return isinstance(args, dict) and arg in args

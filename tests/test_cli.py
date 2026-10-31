@@ -116,6 +116,14 @@ class TestUpDown(InTempDir):
             main(["up"])
         self.assertEqual(cm.exception.code, 3)
 
+    def test_upgrade_applies_flags(self):
+        main(["init", "--agent", "claude", "--with-kit", "chrome-devtools"])
+        with patch("agy_sandbox.cli.engine.upgrade", return_value=0) as upgrade:
+            self.assertEqual(main(["upgrade", "-p", "8080:80", "--host-browser"]), 0)
+        config = upgrade.call_args[0][0]
+        self.assertEqual(config.ports, ["8080:80"])
+        self.assertTrue(config.host_browser.enabled)
+
     def test_rebuild_and_down_ask_when_guardian_finds_work(self):
         main(["init", "--agent", "claude"])
         with patch("agy_sandbox.cli.check_for_unsaved_sandbox_work", return_value=True), \

@@ -16,6 +16,7 @@ from .constants import (
     REMOVE_CMD_TIMEOUT,
     SANDBOX_EXEC_TIMEOUT,
     SBX_AGENT,
+    SNAPSHOT_TIMEOUT,
 )
 
 
@@ -119,17 +120,10 @@ def load_template(image_name: str) -> None:
             pass
 
 
-def create_and_attach(
-    name: str,
-    image_name: str,
-    kits: Sequence[str],
-    kit_args: Sequence[str] = (),
-    env: Sequence[str] = (),
-    ports: Sequence[str] = (),
-    clone: bool = False,
-) -> int:
-    """`sbx run` for a new sandbox: a shell on the project image with every kit attached."""
-    args = ["run", "--name", name, "--template", f"{image_name}:latest"]
+def _creation_args(
+    kits: Sequence[str], kit_args: Sequence[str], env: Sequence[str], ports: Sequence[str], clone: bool
+) -> List[str]:
+    args: List[str] = []
     for kit in kits:
         args.extend(["--kit", kit])
     for arg in kit_args:
@@ -140,8 +134,31 @@ def create_and_attach(
         args.extend(["--publish", port])
     if clone:
         args.append("--clone")
-    args.append(SBX_AGENT)
-    return _interactive(args)
+    return args
+
+
+def create(
+    name: str,
+    template: str,
+    workspace: str,
+    kits: Sequence[str],
+    kit_args: Sequence[str] = (),
+    env: Sequence[str] = (),
+    ports: Sequence[str] = (),
+    clone: bool = False,
+) -> None:
+    """
+    `sbx create`: a shell on the given template (a local image, never pulled) with every
+    kit attached and the workspace mounted. Does not attach; see `attach`.
+    """
+    args = ["create", "--name", name, "--template", template, "--pull", "never"]
+    args += _creation_args(kits, kit_args, env, ports, clone)
+    args += [SBX_AGENT, workspace]
+    cmd = ["sbx", *args]
+    print(f"Executing: {' '.join(cmd)}")
+    res = subprocess.run(cmd, stdin=subprocess.DEVNULL)
+    if res.returncode != 0:
+        raise SandboxError(f"'sbx create' failed with exit code {res.returncode}.")
 
 
 def attach(name: str, env: Sequence[str] = ()) -> int:
@@ -178,9 +195,9 @@ def remove_sandbox(name: str) -> None:
         raise SandboxError(f"Failed to remove sandbox '{name}'. Remove it manually with 'sbx rm {name}'.")
 
 
-def exec_script(name: str, script: str) -> subprocess.CompletedProcess:
+def exec_script(name: str, script: str, user: Optional[str] = None) -> subprocess.CompletedProcess:
     """Runs a shell script inside a sandbox (starting it when stopped) and returns the result."""
-    cmd = ["sbx", "exec", name, "sh", "-c", script]
+    cmd = ["sbx", "exec"] + (["-u", user] if user else []) + [name, "sh", "-c", script]
     try:
         return subprocess.run(
             cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SANDBOX_EXEC_TIMEOUT
@@ -189,6 +206,43 @@ def exec_script(name: str, script: str) -> subprocess.CompletedProcess:
         raise SandboxError("Docker Sandboxes CLI ('sbx') is not installed or not on PATH.")
     except subprocess.TimeoutExpired:
         raise SandboxError(f"'sbx exec {name}' did not finish within {SANDBOX_EXEC_TIMEOUT}s.")
+
+
+def stop_sandbox(name: str) -> None:
+    res = _sbx(["stop", name], timeout=REMOVE_CMD_TIMEOUT)
+    if res.returncode != 0:
+        raise SandboxError(f"'sbx stop {name}' failed with exit code {res.returncode}.")
+
+
+def list_templates() -> List[dict]:
+    return _sbx_json(["template", "ls"]).get("images") or []
+
+
+def save_template(name: str, tag: str) -> None:
+    """Snapshots a (stopped) sandbox's whole filesystem as a template image."""
+    print(f"Snapshotting sandbox '{name}' as template '{tag}'...")
+    res = _sbx(["template", "save", name, tag], timeout=SNAPSHOT_TIMEOUT)
+    if res.returncode != 0:
+        raise SandboxError(f"'sbx template save' failed with exit code {res.returncode}.")
+
+
+def remove_template(tag: str) -> None:
+    _sbx(["template", "rm", "-f", tag], timeout=REMOVE_CMD_TIMEOUT)
+
+
+def copy_from_sandbox(name: str, path: str, dest_dir: str) -> None:
+    """Copies a directory out of the sandbox; it lands as <dest_dir>/<basename of path>."""
+    os.makedirs(dest_dir, exist_ok=True)
+    res = _sbx(["cp", f"{name}:{path}", dest_dir], timeout=SNAPSHOT_TIMEOUT)
+    if res.returncode != 0:
+        raise SandboxError(f"'sbx cp {name}:{path}' failed with exit code {res.returncode}.")
+
+
+def copy_to_sandbox(src_dir: str, name: str, dest_parent: str) -> None:
+    """Copies a host directory into the sandbox under dest_parent, keeping its basename."""
+    res = _sbx(["cp", src_dir, f"{name}:{dest_parent}"], timeout=SNAPSHOT_TIMEOUT)
+    if res.returncode != 0:
+        raise SandboxError(f"'sbx cp {src_dir} -> {name}:{dest_parent}' failed with exit code {res.returncode}.")
 
 
 def stored_secret_services(sandbox_name: str) -> Set[str]:
