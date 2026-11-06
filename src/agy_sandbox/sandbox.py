@@ -1,258 +1,332 @@
 """
-A thin wrapper over the `sbx` CLI. Functions here return data or raise
-SandboxError; they do not print banners or exit. Every non-interactive call
-runs with stdin closed so an sbx update prompt can never hang the tool.
+The only module that runs the `sbx` CLI. Functions return data or raise
+SandboxError; they never print errors or exit. Every non-interactive call runs
+with stdin closed so an sbx prompt can never hang the tool, and its stderr is
+carried in the error so the user sees what sbx said.
+
+JSON output is accepted in both shapes sbx has used: an object with a list under
+a key (0.46: {"sandboxes": [...]}) and a bare array (0.48+).
 """
 import json
 import os
+import re
 import shutil
 import subprocess
-import tempfile
-from typing import List, Optional, Sequence, Set
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Sequence, Set, Tuple
 
+from . import console
+from .compose import SandboxPlan
 from .constants import (
     DAEMON_PREFLIGHT_TIMEOUT,
     DEFAULT_CMD_TIMEOUT,
+    LONG_TIMEOUT,
     REMOVE_CMD_TIMEOUT,
     SANDBOX_EXEC_TIMEOUT,
-    SBX_AGENT,
-    SNAPSHOT_TIMEOUT,
 )
+from .errors import SandboxError, SandboxUnavailable
+from .kits import KitRef
+
+NOT_INSTALLED = "Docker Sandboxes CLI ('sbx') is not installed or not on PATH."
+NOT_INSTALLED_HINT = "Install it with 'brew install docker/tap/sbx' (macOS) or from https://github.com/docker/sbx-releases."
+NOT_SIGNED_IN_MARKERS = ("401 Unauthorized", "sbx login")
+_VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
+_STDERR_TAIL_LINES = 20
 
 
-class SandboxError(RuntimeError):
-    """sbx is unavailable or a call to it failed."""
+@dataclass(frozen=True, order=True)
+class SbxVersion:
+    major: int
+    minor: int
+    patch: int
+
+    @property
+    def as_tuple(self) -> Tuple[int, int, int]:
+        return (self.major, self.minor, self.patch)
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}.{self.patch}"
 
 
-def _sbx(args: Sequence[str], timeout: Optional[int] = DEFAULT_CMD_TIMEOUT, check: bool = False) -> subprocess.CompletedProcess:
-    """Runs a non-interactive sbx command. stderr passes through so sign-in prompts stay visible."""
-    cmd = ["sbx", *args]
+@dataclass(frozen=True)
+class SandboxInfo:
+    name: str
+    state: str
+    kits: Tuple[str, ...]
+    workspace: str
+    clone: bool
+    raw: dict = field(compare=False, repr=False, default_factory=dict)
+
+    @property
+    def running(self) -> bool:
+        return self.state.lower() == "running"
+
+
+# ---------------------------------------------------------------------------
+# process plumbing
+# ---------------------------------------------------------------------------
+def _run(argv: Sequence[str], *, timeout: Optional[int]) -> subprocess.CompletedProcess:
+    """A non-interactive sbx call: stdin closed, stdout and stderr captured."""
+    cmd = ["sbx", *argv]
     try:
-        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True, timeout=timeout)
+        res = subprocess.run(
+            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout
+        )
     except FileNotFoundError:
-        raise SandboxError("Docker Sandboxes CLI ('sbx') is not installed or not on PATH.")
+        raise SandboxUnavailable(NOT_INSTALLED, hint=NOT_INSTALLED_HINT, command=cmd)
     except subprocess.TimeoutExpired:
-        raise SandboxError(f"'{' '.join(cmd)}' did not finish within {timeout}s.")
-    if check and res.returncode != 0:
-        raise SandboxError(f"'{' '.join(cmd)}' failed with exit code {res.returncode}.")
+        raise SandboxError(f"'{' '.join(cmd)}' did not finish within {timeout}s.", command=cmd, returncode=-1)
+    _check_signed_in(res.stderr or "", cmd, res.returncode)
     return res
 
 
-def _sbx_json(args: Sequence[str], timeout: Optional[int] = DEFAULT_CMD_TIMEOUT) -> dict:
-    res = _sbx([*args, "--json"], timeout=timeout, check=True)
-    out = res.stdout or ""
-    # A Docker sign-in flow can print before the document; show it and parse what follows.
-    start = out.find("{")
-    if start > 0 and out[:start].strip():
-        print(out[:start].rstrip())
+def _passthrough(argv: Sequence[str], *, what: str, timeout: Optional[int]) -> None:
+    """A long sbx call whose output the user should watch (builds, snapshots): nothing captured."""
+    cmd = ["sbx", *argv]
+    console.command(cmd)
     try:
-        return json.loads(out[start:] if start >= 0 else "{}")
-    except json.JSONDecodeError:
-        raise SandboxError(f"'sbx {' '.join(args)} --json' returned something that is not JSON.")
+        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, timeout=timeout)
+    except FileNotFoundError:
+        raise SandboxUnavailable(NOT_INSTALLED, hint=NOT_INSTALLED_HINT, command=cmd)
+    except subprocess.TimeoutExpired:
+        raise SandboxError(f"'sbx {what}' did not finish within {timeout}s.", command=cmd, returncode=-1)
+    if res.returncode != 0:
+        raise SandboxError(f"'sbx {what}' failed (exit {res.returncode}).", hint="See the sbx output above.",
+                           command=cmd, returncode=res.returncode)
 
 
-def _interactive(args: Sequence[str]) -> int:
-    """Runs an sbx command attached to the terminal and returns its exit code."""
-    cmd = ["sbx", *args]
-    print(f"Executing: {' '.join(cmd)}")
-    return subprocess.run(cmd).returncode
+def _interactive(argv: Sequence[str]) -> int:
+    """An sbx session attached to the terminal; returns its exit code."""
+    cmd = ["sbx", *argv]
+    console.command(cmd)
+    try:
+        return subprocess.run(cmd).returncode
+    except FileNotFoundError:
+        raise SandboxUnavailable(NOT_INSTALLED, hint=NOT_INSTALLED_HINT, command=cmd)
 
 
-def require_sbx() -> None:
-    """Preflight: the sbx binary is on PATH and sandboxd answers."""
-    if not shutil.which("sbx"):
-        raise SandboxError(
-            "Docker Sandboxes CLI ('sbx') is not installed or not on PATH.\n"
-            "Install Docker Desktop with Sandboxes support, or the standalone sbx CLI."
-        )
-    res = _sbx(["daemon", "status"], timeout=DAEMON_PREFLIGHT_TIMEOUT)
-    if res.returncode != 0 or "running" not in (res.stdout or "").lower():
-        raise SandboxError(
-            "Docker Sandboxes daemon ('sandboxd') is not running.\n"
-            "Start Docker Desktop, or run 'sbx daemon start'."
+def _check_signed_in(stderr: str, cmd: Sequence[str], returncode: int) -> None:
+    if any(marker in stderr for marker in NOT_SIGNED_IN_MARKERS):
+        raise SandboxUnavailable(
+            "The sbx CLI is not signed in to Docker.", hint="Run: sbx login",
+            command=cmd, returncode=returncode, stderr=stderr,
         )
 
 
-def list_sandboxes() -> List[dict]:
-    return _sbx_json(["ls"]).get("sandboxes") or []
+def _failure(what: str, res: subprocess.CompletedProcess, cmd: Sequence[str]) -> SandboxError:
+    tail = "\n".join((res.stderr or "").strip().splitlines()[-_STDERR_TAIL_LINES:])
+    return SandboxError(
+        f"'sbx {what}' failed (exit {res.returncode}).", hint=tail or None,
+        command=cmd, returncode=res.returncode, stderr=res.stderr or "",
+    )
 
 
-def sandbox_exists(name: str) -> bool:
-    return any(s.get("name") == name for s in list_sandboxes())
+def _checked(argv: Sequence[str], *, what: str, timeout: Optional[int] = DEFAULT_CMD_TIMEOUT) -> subprocess.CompletedProcess:
+    res = _run(argv, timeout=timeout)
+    if res.returncode != 0:
+        raise _failure(what, res, ["sbx", *argv])
+    return res
 
 
-def inspect_sandbox(name: str) -> dict:
-    return _sbx_json(["inspect", name])
-
-
-def sandbox_kit_names(name: str) -> List[str]:
-    """Basenames of the kits a sandbox was created with (bundled kits are attached by directory path)."""
-    return [os.path.basename(str(k).rstrip("/")) for k in inspect_sandbox(name).get("kits") or []]
-
-
-def template_loaded(image_id: str) -> bool:
-    """True when an image with this ID is already in the sbx template store."""
-    if not image_id:
-        return False
-    short = image_id.replace("sha256:", "")[:12]
-    for image in _sbx_json(["template", "ls"]).get("images") or []:
-        if str(image.get("id", "")).startswith(short):
-            return True
-    return False
-
-
-def load_template(image_name: str) -> None:
-    """Exports a local Docker image and loads it into the sbx template store."""
-    print(f"Loading host image '{image_name}:latest' into the Docker Sandboxes template store...")
-    fd, tar_path = tempfile.mkstemp(suffix=".tar")
-    os.close(fd)
+def _parse_json(text: str, what: str) -> Any:
+    """Parses the JSON document in sbx output, showing any sign-in text printed before it."""
+    starts = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+    start = min(starts) if starts else -1
+    if start < 0:
+        raise SandboxError(f"'sbx {what} --json' returned no JSON document.", hint=text.strip() or None)
+    if text[:start].strip():
+        console.info(text[:start].rstrip())
     try:
-        subprocess.run(["docker", "save", "-o", tar_path, f"{image_name}:latest"], check=True)
-        res = subprocess.run(["sbx", "template", "load", tar_path], stdin=subprocess.DEVNULL)
-        if res.returncode != 0:
-            raise SandboxError(f"'sbx template load' failed with exit code {res.returncode}.")
-    except subprocess.CalledProcessError as e:
-        raise SandboxError(f"'docker save' failed: {e}")
-    finally:
-        try:
-            os.unlink(tar_path)
-        except OSError:
-            pass
+        return json.loads(text[start:])
+    except json.JSONDecodeError as e:
+        raise SandboxError(f"'sbx {what} --json' returned something that is not JSON ({e}).")
 
 
-def _creation_args(
-    kits: Sequence[str], kit_args: Sequence[str], env: Sequence[str], ports: Sequence[str], clone: bool
-) -> List[str]:
+def _json(argv: Sequence[str], *, timeout: Optional[int] = DEFAULT_CMD_TIMEOUT) -> Any:
+    what = " ".join(argv)
+    res = _checked([*argv, "--json"], what=what, timeout=timeout)
+    return _parse_json(res.stdout or "", what)
+
+
+def _items(doc: Any, key: str, what: str) -> List[dict]:
+    """A list from either JSON shape: a bare array, or an object holding it under `key`."""
+    if isinstance(doc, list):
+        return [d for d in doc if isinstance(d, dict)]
+    if isinstance(doc, dict):
+        items = doc.get(key)
+        return [d for d in (items or []) if isinstance(d, dict)]
+    raise SandboxError(f"'sbx {what} --json' returned an unexpected document.")
+
+
+def _creation_args(plan: SandboxPlan) -> List[str]:
     args: List[str] = []
-    for kit in kits:
-        args.extend(["--kit", kit])
-    for arg in kit_args:
-        args.extend(["--kit-arg", arg])
-    for var in env:
-        args.extend(["-e", var])
-    for port in ports:
-        args.extend(["--publish", port])
-    if clone:
+    if plan.clone:
         args.append("--clone")
+    for var in plan.env:
+        args.extend(["-e", var])
+    for port in plan.ports:
+        args.extend(["--publish", port])
+    for mixin in plan.mixins:
+        args.extend(["--kit", mixin.source])
+    for arg in plan.kit_args:
+        args.extend(["--kit-arg", arg])
     return args
 
 
-def create(
-    name: str,
-    template: str,
-    workspace: str,
-    kits: Sequence[str],
-    kit_args: Sequence[str] = (),
-    env: Sequence[str] = (),
-    ports: Sequence[str] = (),
-    clone: bool = False,
-) -> None:
-    """
-    `sbx create`: a shell on the given template (a local image, never pulled) with every
-    kit attached and the workspace mounted. Does not attach; see `attach`.
-    """
-    args = ["create", "--name", name, "--template", template, "--pull", "never"]
-    args += _creation_args(kits, kit_args, env, ports, clone)
-    args += [SBX_AGENT, workspace]
-    cmd = ["sbx", *args]
-    print(f"Executing: {' '.join(cmd)}")
-    res = subprocess.run(cmd, stdin=subprocess.DEVNULL)
-    if res.returncode != 0:
-        raise SandboxError(f"'sbx create' failed with exit code {res.returncode}.")
+def _info_from(raw: dict) -> SandboxInfo:
+    """Tolerates the 0.46 field names and the snake_case ones introduced in 0.48."""
+    kits: List[str] = []
+    for key in ("kits", "kit_refs", "mixins"):
+        value = raw.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    item = item.get("ref") or item.get("source") or item.get("path") or ""
+                if item:
+                    kits.append(str(item))
+            break
+    return SandboxInfo(
+        name=str(raw.get("name") or ""),
+        state=str(raw.get("state") or raw.get("status") or ""),
+        kits=tuple(kits),
+        workspace=str(raw.get("workspace") or raw.get("workspace_path") or raw.get("workdir") or ""),
+        clone=bool(raw.get("source_repo_dir") or raw.get("clone") or raw.get("cloned")),
+        raw=raw,
+    )
+
+
+# ---------------------------------------------------------------------------
+# preflight
+# ---------------------------------------------------------------------------
+def version() -> SbxVersion:
+    res = _checked(["version"], what="version")
+    match = _VERSION.search(res.stdout or "")
+    if not match:
+        raise SandboxUnavailable("Could not read the sbx version.", hint=(res.stdout or "").strip() or None)
+    return SbxVersion(*(int(g) for g in match.groups()))
+
+
+def require() -> SbxVersion:
+    """The sbx binary is on PATH, its daemon answers and the CLI is signed in."""
+    if not shutil.which("sbx"):
+        raise SandboxUnavailable(NOT_INSTALLED, hint=NOT_INSTALLED_HINT)
+    found = version()
+    res = _run(["daemon", "status"], timeout=DAEMON_PREFLIGHT_TIMEOUT)
+    if res.returncode != 0 or "running" not in (res.stdout or "").lower():
+        raise SandboxUnavailable(
+            "Docker Sandboxes daemon ('sandboxd') is not running.",
+            hint="Start Docker Desktop, or run 'sbx daemon start'.",
+            command=["sbx", "daemon", "status"], returncode=res.returncode, stderr=res.stderr or "",
+        )
+    return found
+
+
+# ---------------------------------------------------------------------------
+# sandboxes
+# ---------------------------------------------------------------------------
+def list_sandboxes() -> List[dict]:
+    return _items(_json(["ls"]), "sandboxes", "ls")
+
+
+def exists(name: str) -> bool:
+    return any(s.get("name") == name for s in list_sandboxes())
+
+
+def inspect(name: str) -> SandboxInfo:
+    doc = _json(["inspect", name])
+    if not isinstance(doc, dict):
+        raise SandboxError(f"'sbx inspect {name} --json' returned an unexpected document.")
+    return _info_from(doc)
+
+
+def create(plan: SandboxPlan) -> None:
+    """`sbx create`: the generated workload with every mixin attached and the workspace mounted. Does not attach."""
+    argv = ["create", "--name", plan.name, *_creation_args(plan), plan.workload.dir, plan.workspace]
+    _passthrough(argv, what="create", timeout=LONG_TIMEOUT)
 
 
 def attach(name: str, env: Sequence[str] = ()) -> int:
-    """Re-attaches to an existing sandbox, starting it if stopped. env applies to the session."""
-    args = ["run", "--name", name]
+    """Attaches to an existing sandbox, starting it if stopped; env applies to the session."""
+    argv = ["run", "--name", name]
     for var in env:
-        args.extend(["-e", var])
-    return _interactive(args)
+        argv.extend(["-e", var])
+    return _interactive(argv)
+
+
+def stop(name: str) -> None:
+    _checked(["stop", name], what=f"stop {name}", timeout=REMOVE_CMD_TIMEOUT)
+
+
+def remove(name: str) -> None:
+    """Removes a sandbox (stopping it first). Raises SandboxError if it is still there afterwards."""
+    if not exists(name):
+        return
+    console.step(f"Removing sandbox '{name}'...")
+    _run(["rm", "-f", name], timeout=REMOVE_CMD_TIMEOUT)
+    if exists(name):
+        raise SandboxError(f"Sandbox '{name}' could not be removed.", hint=f"Remove it manually: sbx rm -f {name}")
 
 
 def publish_ports(name: str, ports: Sequence[str]) -> None:
+    """Reconciles published ports on an existing sandbox; a failure is reported, not fatal."""
     if not ports:
         return
-    args = ["ports", name]
+    argv = ["ports", name]
     for port in ports:
-        args.extend(["--publish", port])
-    print(f"Ensuring published ports on sandbox '{name}': {', '.join(ports)}...")
-    res = _sbx(args)
+        argv.extend(["--publish", port])
+    res = _run(argv, timeout=REMOVE_CMD_TIMEOUT)
     if res.returncode != 0:
-        print(f"⚠️  Warning: 'sbx ports' exited with code {res.returncode}; published ports may be out of date.")
+        console.warn(f"'sbx ports' exited with code {res.returncode}; published ports may be out of date.")
 
 
-def remove_sandbox(name: str) -> None:
-    """Stops and removes a sandbox. Raises SandboxError if it is still there afterwards."""
-    if not sandbox_exists(name):
-        return
-    print(f"Stopping sandbox '{name}'...")
-    _sbx(["stop", name], timeout=REMOVE_CMD_TIMEOUT)
-    print(f"Removing sandbox '{name}'...")
-    res = _sbx(["rm", "-f", name], timeout=REMOVE_CMD_TIMEOUT)
-    if res.returncode != 0:
-        _sbx(["rm", name], timeout=REMOVE_CMD_TIMEOUT)
-    if sandbox_exists(name):
-        raise SandboxError(f"Failed to remove sandbox '{name}'. Remove it manually with 'sbx rm {name}'.")
+def kit_add(name: str, kit: KitRef, kit_args: Sequence[str] = ()) -> None:
+    """`sbx kit add`: attaches a mixin to an existing sandbox, keeping its contents."""
+    argv = ["kit", "add", name, kit.source]
+    for arg in kit_args:
+        argv.extend(["--kit-arg", arg])
+    _passthrough(argv, what="kit add", timeout=LONG_TIMEOUT)
 
 
 def exec_script(name: str, script: str, user: Optional[str] = None) -> subprocess.CompletedProcess:
-    """Runs a shell script inside a sandbox (starting it when stopped) and returns the result."""
-    cmd = ["sbx", "exec"] + (["-u", user] if user else []) + [name, "sh", "-c", script]
-    try:
-        return subprocess.run(
-            cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SANDBOX_EXEC_TIMEOUT
-        )
-    except FileNotFoundError:
-        raise SandboxError("Docker Sandboxes CLI ('sbx') is not installed or not on PATH.")
-    except subprocess.TimeoutExpired:
-        raise SandboxError(f"'sbx exec {name}' did not finish within {SANDBOX_EXEC_TIMEOUT}s.")
+    """Runs a shell script inside a sandbox (starting it when stopped). Never raises on a non-zero exit."""
+    argv = ["exec"] + (["-u", user] if user else []) + [name, "sh", "-c", script]
+    return _run(argv, timeout=SANDBOX_EXEC_TIMEOUT)
 
 
-def stop_sandbox(name: str) -> None:
-    res = _sbx(["stop", name], timeout=REMOVE_CMD_TIMEOUT)
-    if res.returncode != 0:
-        raise SandboxError(f"'sbx stop {name}' failed with exit code {res.returncode}.")
-
-
+# ---------------------------------------------------------------------------
+# templates, files, secrets
+# ---------------------------------------------------------------------------
 def list_templates() -> List[dict]:
-    return _sbx_json(["template", "ls"]).get("images") or []
+    return _items(_json(["template", "ls"]), "images", "template ls")
 
 
 def save_template(name: str, tag: str) -> None:
     """Snapshots a (stopped) sandbox's whole filesystem as a template image."""
-    print(f"Snapshotting sandbox '{name}' as template '{tag}'...")
-    res = _sbx(["template", "save", name, tag], timeout=SNAPSHOT_TIMEOUT)
-    if res.returncode != 0:
-        raise SandboxError(f"'sbx template save' failed with exit code {res.returncode}.")
+    _passthrough(["template", "save", name, tag], what="template save", timeout=LONG_TIMEOUT)
 
 
 def remove_template(tag: str) -> None:
-    _sbx(["template", "rm", "-f", tag], timeout=REMOVE_CMD_TIMEOUT)
+    _run(["template", "rm", "-f", tag], timeout=REMOVE_CMD_TIMEOUT)
 
 
-def copy_from_sandbox(name: str, path: str, dest_dir: str) -> None:
+def copy_from(name: str, path: str, dest_dir: str) -> None:
     """Copies a directory out of the sandbox; it lands as <dest_dir>/<basename of path>."""
     os.makedirs(dest_dir, exist_ok=True)
-    res = _sbx(["cp", f"{name}:{path}", dest_dir], timeout=SNAPSHOT_TIMEOUT)
-    if res.returncode != 0:
-        raise SandboxError(f"'sbx cp {name}:{path}' failed with exit code {res.returncode}.")
+    _checked(["cp", f"{name}:{path}", dest_dir], what=f"cp {name}:{path}", timeout=LONG_TIMEOUT)
 
 
-def copy_to_sandbox(src_dir: str, name: str, dest_parent: str) -> None:
+def copy_to(src_dir: str, name: str, dest_parent: str) -> None:
     """Copies a host directory into the sandbox under dest_parent, keeping its basename."""
-    res = _sbx(["cp", src_dir, f"{name}:{dest_parent}"], timeout=SNAPSHOT_TIMEOUT)
-    if res.returncode != 0:
-        raise SandboxError(f"'sbx cp {src_dir} -> {name}:{dest_parent}' failed with exit code {res.returncode}.")
+    _checked(["cp", src_dir, f"{name}:{dest_parent}"], what=f"cp {src_dir} -> {name}:{dest_parent}", timeout=LONG_TIMEOUT)
 
 
 def stored_secret_services(sandbox_name: str) -> Set[str]:
     """Service secrets visible to a sandbox: global ones plus those scoped to it."""
     services: Set[str] = set()
-    for secret in _sbx_json(["secret", "ls"]).get("secrets") or []:
+    for secret in _items(_json(["secret", "ls"]), "secrets", "secret ls"):
         if secret.get("type") != "service":
             continue
         scope = secret.get("scope") or "global"
         if scope in ("global", sandbox_name):
             services.add(str(secret.get("name")))
     return services
-
