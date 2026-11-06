@@ -274,7 +274,9 @@ def run_read_only_agent_analysis(
         )
         if res.returncode == 0 and res.stdout:
             return extract_json_payload(res.stdout)
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-        pass
-
+        console.warn(f"{spec.display_name} analysis exited with code {res.returncode}: {(res.stderr or '').strip()[-300:]}")
+    except subprocess.TimeoutExpired:
+        console.warn(f"{spec.display_name} analysis did not finish within {timeout}s.")
+    except OSError as e:
+        console.warn(f"{spec.display_name} analysis could not start: {e}")
     return None

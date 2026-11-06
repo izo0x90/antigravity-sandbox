@@ -101,8 +101,27 @@ class TestResume(unittest.TestCase):
         self.assertEqual(len(hints), 2)
         self.assertIn("+opencode", hints[0])
         self.assertTrue(hints[0].endswith("agy-sandbox upgrade"))
-        self.assertIn("-chrome-devtools", hints[1])
+        self.assertIn("kit removed: chrome-devtools", hints[1])
         self.assertTrue(hints[1].endswith("agy-sandbox recreate"))
+
+    def test_resume_never_rewrites_the_workload_kit_and_rebuild_hint_wins(self):
+        with isolated_state(), tempfile.TemporaryDirectory() as cwd, captured_console() as out, \
+             preflight(True)[0], preflight(True)[1], patch(SBX + "publish_ports"), patch(SBX + "attach", return_value=0):
+            plan = self.saved_plan(config(), cwd)
+            before = (Path(plan.workload.dir) / "workload.dockerfile").read_text()
+            engine.up(config(base_image="docker.io/other:1"), cwd=Path(cwd))
+            self.assertEqual((Path(plan.workload.dir) / "workload.dockerfile").read_text(), before)
+        hints = messages_containing(out, "differs from this sandbox")
+        self.assertTrue(hints[0].endswith("agy-sandbox up --rebuild"))
+
+    def test_down_removes_the_generated_workload_kit(self):
+        cfg = config()
+        with isolated_state() as state, tempfile.TemporaryDirectory() as cwd, captured_console(), \
+             preflight(True)[0], preflight(True)[1], patch(SBX + "remove"), patch(HB):
+            engine.desired_plan(cfg, Path(cwd))
+            self.assertTrue((state / "kits" / cfg.sandbox_name / "workload").is_dir())
+            engine.down(cfg)
+            self.assertFalse((state / "kits" / cfg.sandbox_name).exists())
 
     def test_resume_without_saved_plan_warns_once(self):
         with isolated_state(), tempfile.TemporaryDirectory() as cwd, captured_console() as out, \

@@ -16,17 +16,23 @@ from dataclasses import replace
 from pathlib import Path
 from typing import List, Tuple
 
-from . import compose, console, kits, paths, sandbox
+from . import compose, console, kits, paths, sandbox, workload
 from .compose import SandboxPlan, kit_args_for_kit
 from .config import AgyConfig
-from .constants import MIN_SBX_VERSION_FOR_UPGRADE, RECREATE_TAG_PREFIX
+from .constants import MIN_SBX_VERSION_FOR_UPGRADE, RECREATE_TAG_PREFIX, SBX_UPGRADE_HINT
 from .engine import desired_plan, host_browser_for, report_missing_secrets
-from .errors import UpgradeRefused
+from .errors import AgyError, SandboxError, UpgradeRefused
 
 
 def _require_exists(name: str) -> None:
     if not sandbox.exists(name):
-        raise UpgradeRefused([f"sandbox '{name}' does not exist"], hint="Create it with 'agy-sandbox up'.")
+        raise AgyError(f"Sandbox '{name}' does not exist.", hint="Create it with 'agy-sandbox up'.")
+
+
+def _remedy_hint(drift) -> str:
+    if drift.needs_rebuild:
+        return "Run 'agy-sandbox up --rebuild'; a new image or clone mode cannot be applied to an existing sandbox."
+    return "Run 'agy-sandbox recreate' to apply it while keeping the sandbox's contents."
 
 
 def _finish(config: AgyConfig, plan: SandboxPlan) -> int:
@@ -47,7 +53,7 @@ def upgrade(config: AgyConfig, cwd: Path) -> int:
         needed = ".".join(str(n) for n in MIN_SBX_VERSION_FOR_UPGRADE)
         raise UpgradeRefused(
             [f"sbx {needed} or newer is needed for in-place upgrades (found {version})"],
-            hint="brew upgrade --cask sbx",
+            hint=SBX_UPGRADE_HINT,
         )
     name = config.sandbox_name
     _require_exists(name)
@@ -57,15 +63,21 @@ def upgrade(config: AgyConfig, cwd: Path) -> int:
             [f"sandbox '{name}' was created by an older agy-sandbox and has no saved plan"],
             hint="Use 'agy-sandbox recreate' to rebuild it with its contents, or 'agy-sandbox up --rebuild'.",
         )
-    wanted = desired_plan(config, cwd)
+    wanted = desired_plan(config, cwd, write=False)
     drift = compose.diff(saved, wanted)
     if not drift.in_place:
-        raise UpgradeRefused(drift.reasons(), hint="Run 'agy-sandbox recreate' to apply it while keeping the sandbox's contents.")
+        raise UpgradeRefused(drift.reasons(), hint=_remedy_hint(drift))
 
     console.step(f"Upgrading sandbox '{name}' in place ({config.auth_mode} logins)")
+    # The saved plan advances after every successful `kit add`, so a failure half way
+    # leaves a plan that matches the sandbox and a retry adds only what is left.
+    workload.write(config, cwd)
+    current = replace(saved, kit_args=wanted.kit_args)
     for kit in drift.added:
         console.step(f"   adding kit: {kit.name}")
         sandbox.kit_add(name, kit, sorted(kit_args_for_kit(wanted.kit_args, kit.name)))
+        current = replace(current, mixins=current.mixins + (kit,))
+        compose.save_plan(current)
     if not drift.added:
         console.info("   kits unchanged; applying env and ports")
     sandbox.publish_ports(name, wanted.ports)
@@ -90,15 +102,18 @@ def recreate(config: AgyConfig, cwd: Path) -> int:
     name = config.sandbox_name
     _require_exists(name)
     saved = compose.load_plan(name)
-    wanted = desired_plan(config, cwd)
+    wanted = desired_plan(config, cwd, write=False)
     if saved is None:
         info = sandbox.inspect(name)
         saved = replace(wanted, clone=info.clone, workspace=info.workspace or wanted.workspace, mixins=())
         console.warn(f"Sandbox '{name}' has no saved plan (created by an older agy-sandbox); "
                      "kit volumes are carried over only for the kits agy.yaml lists now.")
-    elif saved.clone != wanted.clone:
-        console.warn(f"agy.yaml says clone: {wanted.clone} but the sandbox was created with clone: {saved.clone}; "
-                     "clone mode is fixed at creation and is kept.")
+    else:
+        drift = compose.diff(saved, wanted)
+        if drift.needs_rebuild:
+            # A snapshot carries the old image; recording a new workload as applied would hide the change forever.
+            raise UpgradeRefused([r for r in drift.reasons() if "workload" in r or "clone" in r], hint=_remedy_hint(drift))
+    workload.write(config, cwd)
     plan = replace(wanted, clone=saved.clone, workspace=saved.workspace)
 
     console.step(f"Recreating sandbox '{name}' ({config.auth_mode} logins) from a snapshot of its filesystem")
@@ -123,21 +138,31 @@ def recreate(config: AgyConfig, cwd: Path) -> int:
     console.step(f"Snapshotting '{name}' as template '{tag}'...")
     sandbox.save_template(name, tag)
     sandbox.remove(name)
+    restore_hint = [f"   Restore it with: {' '.join(sandbox.create_from_template_argv(plan, tag))}"]
+    restore_hint += [f"   then: sbx cp {src} {name}:{Path(path).parent}" for path, src in staged]
     try:
         sandbox.create_from_template(plan, tag)
     except Exception:
         console.warn(f"The sandbox could not be recreated. Its snapshot is template '{tag}'"
                      + (f" and its carried-out data is under {staging}" if staged else "") + ".")
-        console.info(f"   Restore it with: sbx create --name {name} --template {tag} --pull never"
-                     + (" --clone" if plan.clone else "") + f" {plan.workload.dir} {plan.workspace}")
+        for line in restore_hint:
+            console.info(line)
         raise
+    # The sandbox now has the new composition: record it before anything else can fail.
+    compose.save_plan(plan)
 
     # 3. Put the carried-out data back and hand it to the agent user.
-    for path, src in staged:
-        parent = str(Path(path).parent)
-        sandbox.exec_script(name, f"mkdir -p '{path}' && find '{path}' -mindepth 1 -delete", user="root")
-        sandbox.copy_to(src, name, parent)
-        sandbox.exec_script(name, f"chown -R agent:agent '{path}'", user="root")
+    try:
+        for path, src in staged:
+            parent = str(Path(path).parent)
+            _exec_or_raise(name, f"mkdir -p '{path}' && find '{path}' -mindepth 1 -delete", user="root")
+            sandbox.copy_to(src, name, parent)
+            _exec_or_raise(name, f"chown -R agent:agent '{path}'", user="root")
+    except Exception:
+        console.warn(f"The sandbox was recreated but its carried-out data under {staging} was not fully restored.")
+        for line in restore_hint[1:]:
+            console.info(line)
+        raise
     if staged:
         shutil.rmtree(staging, ignore_errors=True)
         try:
@@ -149,7 +174,15 @@ def recreate(config: AgyConfig, cwd: Path) -> int:
     # 4. Keep this snapshot as the rollback point; older ones for this sandbox go.
     for image in sandbox.list_templates():
         repo, old_tag = str(image.get("repository", "")), str(image.get("tag", ""))
-        if repo.endswith(name) and old_tag.startswith(RECREATE_TAG_PREFIX) and old_tag != tag.split(":")[1]:
+        if (repo == name or repo.endswith("/" + name)) and old_tag.startswith(RECREATE_TAG_PREFIX) and old_tag != tag.split(":")[1]:
             sandbox.remove_template(f"{name}:{old_tag}")
     console.step(f"Recreate complete. Snapshot kept as '{tag}' for rollback.")
     return _finish(config, plan)
+
+
+def _exec_or_raise(name: str, script: str, user: str) -> None:
+    res = sandbox.exec_script(name, script, user=user)
+    if res.returncode != 0:
+        raise SandboxError(f"'sbx exec {name}' failed (exit {res.returncode}) while restoring data.",
+                           hint=(res.stderr or "").strip() or None, command=("sbx", "exec", name),
+                           returncode=res.returncode, stderr=res.stderr or "")

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from agy_sandbox import compose, engine, upgrade
 from agy_sandbox.compose import SandboxPlan, diff
 from agy_sandbox.config import AgyConfig, HostBrowserConfig
-from agy_sandbox.errors import SandboxError, UpgradeRefused
+from agy_sandbox.errors import AgyError, SandboxError, UpgradeRefused
 from agy_sandbox.kits import KitRef
 from agy_sandbox.sandbox import SandboxInfo, SbxVersion
 from agy_sandbox.workload import WorkloadRef
@@ -121,6 +121,19 @@ class TestUpgrade(UpgradeBase):
                          ["claude", "claude-credentials", "codex", "codex-credentials", "chrome-devtools", "chrome-host"])
         browser.return_value.start.assert_called_once()
 
+    def test_partial_kit_add_failure_leaves_a_plan_that_matches_the_sandbox(self):
+        self.save(config(kits=["claude"]))
+        self.mocks["kit_add"].side_effect = [None, SandboxError("boom")]
+        with self.assertRaises(SandboxError):
+            upgrade.upgrade(config(kits=["claude", "codex", "chrome-devtools"]), Path(self.cwd.name))
+        self.assertEqual(compose.load_plan("agy-sandbox-demo").mixin_names(), ["claude", "codex"])
+        self.mocks["attach"].assert_not_called()
+        # the retry adds only what is left
+        self.mocks["kit_add"].side_effect = None
+        self.mocks["kit_add"].reset_mock()
+        upgrade.upgrade(config(kits=["claude", "codex", "chrome-devtools"]), Path(self.cwd.name))
+        self.assertEqual([c[0][1].name for c in self.mocks["kit_add"].call_args_list], ["chrome-devtools"])
+
     def test_login_mode_change_is_refused(self):
         self.save(config(kits=["claude"]))
         with self.assertRaises(UpgradeRefused) as ctx:
@@ -145,7 +158,7 @@ class TestUpgrade(UpgradeBase):
         with self.assertRaises(UpgradeRefused) as ctx:
             upgrade.upgrade(config(), Path(self.cwd.name))
         self.assertIn("0.48", ctx.exception.reasons[0])
-        self.assertEqual(ctx.exception.hint, "brew upgrade --cask sbx")
+        self.assertEqual(ctx.exception.hint, "brew upgrade docker/tap/sbx")
 
     def test_env_and_ports_only_is_applied_without_kit_add(self):
         self.save(config())
@@ -154,10 +167,28 @@ class TestUpgrade(UpgradeBase):
         self.mocks["publish_ports"].assert_called_once_with("agy-sandbox-demo", ("80:80",))
         self.mocks["attach"].assert_called_once_with("agy-sandbox-demo", env=("A=1",))
 
-    def test_missing_sandbox_is_refused(self):
+    def test_missing_sandbox_is_an_error_with_the_up_hint(self):
         self.mocks["exists"].return_value = False
-        with self.assertRaises(UpgradeRefused):
+        with self.assertRaises(AgyError) as ctx:
             upgrade.upgrade(config(), Path(self.cwd.name))
+        self.assertIn("agy-sandbox up", ctx.exception.hint)
+
+    def test_workload_or_clone_change_points_at_rebuild_and_recreate_refuses_it_too(self):
+        self.save(config(kits=["claude"]))
+        with self.assertRaises(UpgradeRefused) as ctx:
+            upgrade.upgrade(config(kits=["claude"], setup_scripts=["make"]), Path(self.cwd.name))
+        self.assertIn("up --rebuild", ctx.exception.hint)
+        with self.assertRaises(UpgradeRefused) as ctx:
+            upgrade.recreate(config(kits=["claude"], setup_scripts=["make"]), Path(self.cwd.name))
+        self.assertIn("up --rebuild", ctx.exception.hint)
+        self.assertEqual(compose.load_plan("agy-sandbox-demo").mixin_names(), ["claude"])
+
+    def test_refused_upgrade_does_not_rewrite_the_workload_kit_on_disk(self):
+        plan = self.save(config(kits=["claude"]))
+        before = (Path(plan.workload.dir) / "workload.yaml").read_text()
+        with self.assertRaises(UpgradeRefused):
+            upgrade.upgrade(config(kits=["claude"], setup_scripts=["make"]), Path(self.cwd.name))
+        self.assertEqual((Path(plan.workload.dir) / "workload.yaml").read_text(), before)
 
 
 class TestRecreate(UpgradeBase):
@@ -173,6 +204,7 @@ class TestRecreate(UpgradeBase):
             patch(SBX + "remove_template"),
         ]
         mocks = {p.attribute: p.start() for p in patches}
+        mocks["exec_script"].return_value.returncode = 0
         try:
             code = upgrade.recreate(cfg, Path(self.cwd.name))
         finally:
@@ -200,13 +232,15 @@ class TestRecreate(UpgradeBase):
         self.assertEqual(compose.load_plan("agy-sandbox-demo").mixin_names(), ["claude"])
         self.assertTrue(messages_containing(self.out, "Snapshot kept as"))
 
-    def test_clone_mode_is_kept_and_its_workspace_carried(self):
+    def test_clone_workspace_is_carried_and_a_clone_change_is_refused(self):
         self.save(config(clone=True))
-        code, m = self.run_recreate(config(clone=False))
+        code, m = self.run_recreate(config(clone=True, kits=["claude"]))
         carried = [c[0][1] for c in m["copy_from"].call_args_list]
         self.assertEqual(carried[0], os.path.abspath(self.cwd.name))
         self.assertTrue(m["create_from_template"].call_args[0][0].clone)
-        self.assertTrue(messages_containing(self.out, "clone mode is fixed"))
+        with self.assertRaises(UpgradeRefused) as ctx:
+            upgrade.recreate(config(clone=False), Path(self.cwd.name))
+        self.assertIn("up --rebuild", ctx.exception.hint)
 
     def test_failed_recreate_prints_the_restore_command_and_raises(self):
         self.save(config())
@@ -217,6 +251,17 @@ class TestRecreate(UpgradeBase):
         restore = messages_containing(self.out, "Restore it with: sbx create --name agy-sandbox-demo --template")
         self.assertEqual(len(restore), 1)
         self.assertIsNotNone(compose.load_plan("agy-sandbox-demo"))   # the old plan is kept for the retry
+
+    def test_restore_failure_after_recreate_keeps_the_new_plan_and_names_the_staging_dir(self):
+        self.save(config())
+        with patch(SBX + "exec_script") as ex, patch(SBX + "copy_from"), patch(SBX + "stop"), patch(SBX + "save_template"), \
+             patch(SBX + "remove"), patch(SBX + "create_from_template"), patch(SBX + "copy_to", side_effect=SandboxError("cp failed")), \
+             self.assertRaises(SandboxError):
+            ex.return_value.returncode = 0
+            upgrade.recreate(config(kits=["claude"]), Path(self.cwd.name))
+        self.assertEqual(compose.load_plan("agy-sandbox-demo").mixin_names(), ["claude"])
+        self.assertTrue(messages_containing(self.out, "was not fully restored"))
+        self.assertTrue(messages_containing(self.out, "then: sbx cp "))
 
     def test_without_saved_plan_falls_back_to_inspect(self):
         with patch(SBX + "inspect", return_value=SandboxInfo("agy-sandbox-demo", "stopped", (), "/old", True)):

@@ -79,6 +79,17 @@ class TestPlumbing(unittest.TestCase):
         self.assertEqual(names, ["agy-sandbox-demo"])
         self.assertEqual(messages_containing(out, "Signed in as me"), ["Signed in as me"])
 
+    def test_login_marker_on_a_successful_call_is_not_an_error(self):
+        fake = FakeSbx().respond("sbx", "ls", stdout=LS_ARRAY, stderr="tip: run sbx login to refresh")
+        with patch(RUN, fake):
+            self.assertEqual(len(sandbox.list_sandboxes()), 1)
+
+    def test_brackets_in_the_preamble_do_not_break_parsing(self):
+        fake = FakeSbx().respond("sbx", "ls", stdout="[info] using builder [sbx-kit-builder]\n" + LS_ARRAY)
+        with patch(RUN, fake), captured_console() as out:
+            self.assertEqual(len(sandbox.list_sandboxes()), 1)
+        self.assertTrue(messages_containing(out, "using builder"))
+
     def test_non_json_output_is_a_sandbox_error(self):
         fake = FakeSbx().respond("sbx", "ls", stdout="nothing here")
         with patch(RUN, fake), self.assertRaises(SandboxError):
@@ -168,14 +179,12 @@ class TestSandboxes(unittest.TestCase):
         self.assertEqual(fake.calls, [["sbx", "kit", "add", "agy-sandbox-demo", "/pkg/kits/claude-credentials", "--kit-arg", "x.y=1"]])
 
     def test_remove_verifies_the_sandbox_is_gone(self):
-        answers = iter([LS_OBJECT, LS_OBJECT])
-        fake = FakeSbx()
-        fake.respond("sbx", "ls", stdout=LS_OBJECT)
+        fake = FakeSbx().respond("sbx", "ls", stdout=LS_OBJECT).fail("sbx", "rm", stderr="busy")
         with patch(RUN, fake), captured_console(), self.assertRaises(SandboxError) as ctx:
             sandbox.remove("agy-sandbox-demo")
-        self.assertEqual(fake.verbs(), ["ls", "rm", "ls"])
+        self.assertEqual(fake.verbs(), ["ls", "stop", "rm", "ls"])
         self.assertIn("sbx rm -f agy-sandbox-demo", ctx.exception.hint)
-        del answers
+        self.assertIn("busy", ctx.exception.hint)
         fake = FakeSbx().respond("sbx", "ls", stdout=json.dumps([]))
         with patch(RUN, fake), captured_console():
             sandbox.remove("agy-sandbox-demo")
@@ -205,6 +214,21 @@ class TestTemplatesAndSecrets(unittest.TestCase):
         for doc in (json.dumps({"images": [{"repository": "r", "tag": "t"}]}), json.dumps([{"repository": "r", "tag": "t"}])):
             with patch(RUN, FakeSbx().respond("sbx", "template", "ls", stdout=doc)):
                 self.assertEqual(sandbox.list_templates(), [{"repository": "r", "tag": "t"}])
+
+    def test_create_from_template_argv_matches_create_plus_template(self):
+        fake = FakeSbx()
+        with patch(RUN, fake), captured_console():
+            sandbox.create_from_template(plan(clone=True), "agy-sandbox-demo:recreate-1")
+        self.assertEqual(fake.calls[0][:8], ["sbx", "create", "--name", "agy-sandbox-demo", "--template", "agy-sandbox-demo:recreate-1", "--pull", "never"])
+        self.assertEqual(fake.calls[0][8:], ["--clone", "-e", "A=1", "--publish", "3000:3000", "--kit", "/pkg/kits/claude",
+                                             "--kit", "docker.io/sbx/playwright:1", "--kit-arg", "chrome-host.host_port=9222",
+                                             "/state/kits/agy-sandbox-demo/workload", "/w"])
+        self.assertEqual(sandbox.create_from_template_argv(plan(clone=True), "agy-sandbox-demo:recreate-1"), fake.calls[0])
+
+    def test_remove_template_warns_on_failure(self):
+        with patch(RUN, FakeSbx().fail("sbx", "template", "rm")), captured_console() as out:
+            sandbox.remove_template("x:recreate-1")
+        self.assertTrue(messages_containing(out, "sbx template rm -f x:recreate-1"))
 
     def test_copy_argv(self):
         fake = FakeSbx()

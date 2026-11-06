@@ -7,14 +7,13 @@ import json
 import os
 import time
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from . import __version__, paths
 from .config import AgyConfig
 from .constants import AUTH_MODE_PROXY_MANAGED, KIT_CHROME_DEVTOOLS, KIT_CHROME_HOST, PLAN_SCHEMA_VERSION
 from .errors import ConfigError
-from .kits import KitRef, credential_services, credentials_kit, load_descriptor, resolve
+from .kits import KitRef, credential_services, credentials_bundled_kit, resolve
 from .workload import WorkloadRef
 
 
@@ -32,10 +31,7 @@ class SandboxPlan:
     agy_version: str = __version__
 
     def to_dict(self) -> dict:
-        data = asdict(self)
-        data["mixins"] = [asdict(m) for m in self.mixins]
-        data["workload"] = asdict(self.workload)
-        return {"schema": PLAN_SCHEMA_VERSION, "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **data}
+        return {"schema": PLAN_SCHEMA_VERSION, "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), **asdict(self)}
 
     @classmethod
     def from_dict(cls, data: dict) -> "SandboxPlan":
@@ -85,10 +81,10 @@ def mixins_for(config: AgyConfig) -> Tuple[KitRef, ...]:
             chosen.append(ref)
 
     def add_credentials(kit: KitRef) -> None:
-        creds = credentials_kit(kit)
+        creds = credentials_bundled_kit(kit)
         if not creds:
             return
-        for service, phase in credential_services(load_descriptor(Path(creds.source))):
+        for service, phase in credential_services(creds.descriptor):
             owner = owners.setdefault((service, phase), creds.name)
             if owner != creds.name:
                 raise ConfigError(
@@ -96,7 +92,7 @@ def mixins_for(config: AgyConfig) -> Tuple[KitRef, ...]:
                     f"both declare the '{service}' credential, and sbx allows one owner per service.",
                     hint="Keep one of those agents in this sandbox, or use auth_mode: sandbox-local.",
                 )
-        add(creds)
+        add(creds.ref())
 
     for name in config.all_kits():
         kit = resolve(name)
@@ -159,6 +155,17 @@ class Drift:
     def empty(self) -> bool:
         return not (self.added or self.removed or self.kit_args_changed or self.workload_changed
                     or self.clone_changed or self.auth_mode_changed)
+
+    @property
+    def needs_rebuild(self) -> bool:
+        """A new image or a different clone mode cannot be applied to an existing filesystem."""
+        return self.workload_changed or self.clone_changed
+
+    def remedy(self) -> str:
+        """The command that applies this drift."""
+        if self.needs_rebuild:
+            return "agy-sandbox up --rebuild"
+        return "agy-sandbox upgrade" if self.in_place else "agy-sandbox recreate"
 
     def reasons(self) -> List[str]:
         out: List[str] = []
@@ -223,7 +230,10 @@ def load_plan(name: str) -> Optional[SandboxPlan]:
         raise ConfigError(f"Saved sandbox plan {path} is unreadable: {e}", hint="Delete it and run 'agy-sandbox up --rebuild'.")
     if not isinstance(data, dict):
         raise ConfigError(f"Saved sandbox plan {path} is not a JSON object.", hint="Delete it and run 'agy-sandbox up --rebuild'.")
-    schema = int(data.get("schema") or 0)
+    try:
+        schema = int(data.get("schema") or 0)
+    except (TypeError, ValueError):
+        raise ConfigError(f"Saved sandbox plan {path} has an invalid schema field.", hint="Delete it and run 'agy-sandbox up --rebuild'.")
     if schema > PLAN_SCHEMA_VERSION:
         raise ConfigError(
             f"Sandbox '{name}' was created by a newer agy-sandbox (plan schema {schema}).",

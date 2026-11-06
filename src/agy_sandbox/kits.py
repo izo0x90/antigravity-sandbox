@@ -163,11 +163,15 @@ def resolve(ref: str) -> KitRef:
     )
 
 
-def credentials_kit(kit: KitRef) -> Optional[KitRef]:
-    """The bundled `<name>-credentials` kit for a bundled kit, when one exists."""
+def credentials_bundled_kit(kit: KitRef) -> Optional[BundledKit]:
+    """The bundled `<name>-credentials` kit for a bundled kit (descriptor included), when one exists."""
     if not kit.bundled:
         return None
-    sibling = bundled_kit(kit.name + CREDENTIALS_KIT_SUFFIX)
+    return bundled_kit(kit.name + CREDENTIALS_KIT_SUFFIX)
+
+
+def credentials_kit(kit: KitRef) -> Optional[KitRef]:
+    sibling = credentials_bundled_kit(kit)
     return sibling.ref() if sibling else None
 
 

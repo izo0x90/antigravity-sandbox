@@ -6,6 +6,7 @@ is created; nothing here runs Docker.
 """
 import hashlib
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -25,12 +26,21 @@ from . import paths
 
 PACKAGED_DOCKERFILE = Path(__file__).resolve().parent / "docker" / DEFAULT_DOCKERFILE_NAME
 _BASE_IMAGE_ARG = re.compile(r"^ARG\s+BASE_IMAGE\s*(=.*)?$", re.MULTILINE)
+_DIRECTIVE = re.compile(r"^\s*#\s*(syntax|escape|check)\s*=", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
 class WorkloadRef:
     dir: str
     fingerprint: str   # sha256 over the written descriptor and Dockerfile
+
+
+@dataclass(frozen=True)
+class Rendered:
+    """The workload kit's two files as text, before or without writing them."""
+    ref: WorkloadRef
+    descriptor: str
+    dockerfile: str
 
 
 class _Dumper(yaml.SafeDumper):
@@ -84,11 +94,20 @@ def render_descriptor(config: AgyConfig) -> dict:
 
 
 def render_dockerfile(source_text: str, base_image: str) -> str:
-    """The Dockerfile verbatim, with `ARG BASE_IMAGE` defaulting to the configured base."""
+    """
+    The Dockerfile verbatim, with `ARG BASE_IMAGE` defaulting to the configured base. When
+    the file declares no such ARG, one is inserted after any leading parser directives
+    (`# syntax=`, `# escape=`), which BuildKit only honours on the first lines.
+    """
     line = f"ARG BASE_IMAGE={base_image}"
     if _BASE_IMAGE_ARG.search(source_text):
         return _BASE_IMAGE_ARG.sub(line, source_text, count=1)
-    return f"{line}\n{source_text}"
+    lines = source_text.splitlines(keepends=True)
+    index = 0
+    while index < len(lines) and _DIRECTIVE.match(lines[index]):
+        index += 1
+    lines.insert(index, line + "\n")
+    return "".join(lines)
 
 
 def descriptor_text(config: AgyConfig) -> str:
@@ -104,15 +123,31 @@ def fingerprint(descriptor: str, dockerfile: str) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def write(config: AgyConfig, cwd: Path) -> WorkloadRef:
-    """Writes (or refreshes) the workload kit directory for this sandbox and returns its reference."""
+def render(config: AgyConfig, cwd: Path) -> Rendered:
+    """What the workload kit for this config would contain; touches nothing on disk."""
     source, _ = project_dockerfile(cwd)
     dockerfile = render_dockerfile(source.read_text(encoding="utf-8"), config.base_image)
     descriptor = descriptor_text(config)
     kit_dir = paths.workload_dir(config.sandbox_name)
+    return Rendered(WorkloadRef(dir=str(kit_dir), fingerprint=fingerprint(descriptor, dockerfile)), descriptor, dockerfile)
+
+
+def write(config: AgyConfig, cwd: Path) -> WorkloadRef:
+    """Writes (or refreshes) the workload kit directory for this sandbox and returns its reference."""
+    rendered = render(config, cwd)
+    kit_dir = Path(rendered.ref.dir)
     kit_dir.mkdir(parents=True, exist_ok=True)
-    for name, text in ((f"{WORKLOAD_KIT_NAME}.yaml", descriptor), (f"{WORKLOAD_KIT_NAME}.dockerfile", dockerfile)):
+    for name, text in ((f"{WORKLOAD_KIT_NAME}.yaml", rendered.descriptor), (f"{WORKLOAD_KIT_NAME}.dockerfile", rendered.dockerfile)):
         target = kit_dir / name
         if not target.is_file() or target.read_text(encoding="utf-8") != text:
             target.write_text(text, encoding="utf-8")
-    return WorkloadRef(dir=str(kit_dir), fingerprint=fingerprint(descriptor, dockerfile))
+    return rendered.ref
+
+
+def delete(sandbox_name: str) -> None:
+    """Removes the generated kit directory of a sandbox that no longer exists."""
+    shutil.rmtree(paths.workload_dir(sandbox_name), ignore_errors=True)
+    try:
+        paths.workload_dir(sandbox_name).parent.rmdir()
+    except OSError:
+        pass

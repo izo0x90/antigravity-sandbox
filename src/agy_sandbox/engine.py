@@ -41,20 +41,19 @@ def report_missing_secrets(config: AgyConfig) -> None:
 def report_drift(saved: SandboxPlan, wanted: SandboxPlan) -> None:
     """On resume: say when agy.yaml no longer matches what the sandbox was built with."""
     drift = compose.diff(saved, wanted)
-    changes = [f"+{m.name}" for m in drift.added] + [f"-{name}" for name in drift.removed]
-    if drift.workload_changed:
-        changes.append("workload (Dockerfile.agy / build_args / setup_scripts)")
-    if drift.kit_args_changed:
-        changes.append("kit_args for " + ", ".join(drift.kit_args_changed))
-    if not changes:
+    if drift.empty:
         return
-    command = "agy-sandbox upgrade" if drift.in_place else "agy-sandbox recreate"
-    console.hint(f"agy.yaml differs from this sandbox ({' '.join(changes)}). Apply it without losing anything inside: {command}")
+    changes = [f"+{m.name}" for m in drift.added] + drift.reasons()
+    console.hint(f"agy.yaml differs from this sandbox ({'; '.join(changes)}). Apply it with: {drift.remedy()}")
 
 
-def desired_plan(config: AgyConfig, cwd: Path) -> SandboxPlan:
-    """Writes the workload kit and composes the plan agy.yaml asks for."""
-    ref = workload.write(config, cwd)
+def desired_plan(config: AgyConfig, cwd: Path, *, write: bool = True) -> SandboxPlan:
+    """
+    The plan agy.yaml asks for. With `write`, the workload kit directory is written so sbx
+    can build it; without, it is only rendered (for drift reports), so the directory on
+    disk keeps matching the sandbox that was built from it.
+    """
+    ref = workload.write(config, cwd) if write else workload.render(config, cwd).ref
     return compose.plan(config, workspace=str(cwd), workload=ref)
 
 
@@ -68,7 +67,7 @@ def resume(config: AgyConfig, cwd: Path) -> int:
         console.warn(f"Sandbox '{name}' was created by an older agy-sandbox; 'upgrade' cannot apply agy.yaml "
                      "changes to it. Use 'agy-sandbox recreate' (keeps its contents) or 'up --rebuild'.")
     else:
-        report_drift(saved, desired_plan(config, cwd))
+        report_drift(saved, desired_plan(config, cwd, write=False))
         if config.host_browser.enabled and KIT_CHROME_HOST not in saved.mixin_names():
             console.warn("This sandbox was created without host browser support; run 'agy-sandbox upgrade --host-browser' to add it.")
     sandbox.publish_ports(name, config.ports)
@@ -81,11 +80,11 @@ def resume(config: AgyConfig, cwd: Path) -> int:
 def create(config: AgyConfig, cwd: Path) -> int:
     plan = desired_plan(config, cwd)
     report_missing_secrets(config)
-    if config.host_browser.enabled:
-        host_browser_for(config).start()
     console.step(f"Creating sandbox '{plan.name}' ({config.auth_mode} logins); sbx builds the project image first...")
     sandbox.create(plan)
     compose.save_plan(plan)
+    if config.host_browser.enabled:
+        host_browser_for(config).start()
     return sandbox.attach(plan.name, env=plan.env)
 
 
@@ -99,6 +98,7 @@ def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path) -> int:
             return resume(config, cwd)
         sandbox.remove(name)
         compose.delete_plan(name)
+        workload.delete(name)
     return create(config, cwd)
 
 
@@ -106,12 +106,15 @@ def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path) -> int:
 # down
 # ---------------------------------------------------------------------------
 def down(config: AgyConfig) -> None:
-    sandbox.require()
     name = config.sandbox_name
-    if not sandbox.exists(name):
-        console.info(f"Sandbox '{name}' does not exist.")
-    else:
-        sandbox.remove(name)
-        console.step("Done.")
-    compose.delete_plan(name)
-    host_browser_for(config).stop()
+    try:
+        sandbox.require()
+        if not sandbox.exists(name):
+            console.info(f"Sandbox '{name}' does not exist.")
+        else:
+            sandbox.remove(name)
+            console.step("Done.")
+        compose.delete_plan(name)
+        workload.delete(name)
+    finally:
+        host_browser_for(config).stop()

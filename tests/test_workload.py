@@ -38,6 +38,17 @@ class TestRender(unittest.TestCase):
         text = "ARG BASE_IMAGE=old:1\nFROM ${BASE_IMAGE}\nRUN true\n"
         self.assertEqual(workload.render_dockerfile(text, "new:2"), "ARG BASE_IMAGE=new:2\nFROM ${BASE_IMAGE}\nRUN true\n")
         self.assertEqual(workload.render_dockerfile("FROM ${BASE_IMAGE}\n", "new:2"), "ARG BASE_IMAGE=new:2\nFROM ${BASE_IMAGE}\n")
+        directives = "# syntax=docker/dockerfile:1-labs\n# escape=`\nFROM ${BASE_IMAGE}\n"
+        self.assertEqual(workload.render_dockerfile(directives, "new:2"),
+                         "# syntax=docker/dockerfile:1-labs\n# escape=`\nARG BASE_IMAGE=new:2\nFROM ${BASE_IMAGE}\n")
+
+    def test_render_touches_nothing_on_disk(self):
+        with isolated_state() as state, tempfile.TemporaryDirectory() as cwd:
+            rendered = workload.render(AgyConfig(project_name="demo"), Path(cwd))
+            self.assertFalse((state / "kits").exists())
+            self.assertEqual(rendered.ref, workload.write(AgyConfig(project_name="demo"), Path(cwd)))
+            workload.delete("agy-sandbox-demo")
+            self.assertFalse((state / "kits" / "agy-sandbox-demo").exists())
 
     def test_packaged_default_dockerfile_ends_as_the_agent_user(self):
         text = workload.PACKAGED_DOCKERFILE.read_text(encoding="utf-8")

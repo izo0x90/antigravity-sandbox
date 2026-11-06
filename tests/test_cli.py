@@ -139,9 +139,11 @@ class TestLifecycleCommands(InTempDir):
             self.assertEqual(main(["upgrade", "-p", "8080:80", "--host-browser"]), 0)
         self.assertEqual(up.call_args[0][0].ports, ["8080:80"])
         self.assertTrue(up.call_args[0][0].host_browser.enabled)
-        with patch("agy_sandbox.cli.upgrade.recreate", return_value=0) as rc:
+        with patch("agy_sandbox.cli.upgrade.recreate", return_value=0) as rc, \
+             patch("agy_sandbox.cli.check_for_unsaved_sandbox_work", return_value=False) as guard:
             self.assertEqual(main(["recreate"]), 0)
         rc.assert_called_once()
+        guard.assert_called_once()
 
     def test_upgrade_refusal_lists_reasons_and_hint(self):
         with patch("agy_sandbox.cli.upgrade.upgrade", side_effect=UpgradeRefused(["kit removed: omp"], hint="Run 'agy-sandbox recreate'")), \

@@ -69,7 +69,7 @@ def confirm_destroy(config: AgyConfig) -> None:
     except EOFError:
         confirm = "n"
     if confirm.strip().lower() != "y":
-        raise ConfigError("Operation aborted. Your uncommitted/unpushed code has been protected! Stay safe, homie!")
+        raise AgyError("Operation aborted. Your uncommitted/unpushed code has been protected! Stay safe, homie!")
 
 
 def apply_session_flags(config: AgyConfig, args: argparse.Namespace) -> None:
@@ -196,6 +196,7 @@ def upgrade_command(args: argparse.Namespace) -> None:
 
 def recreate_command(args: argparse.Namespace) -> None:
     config = load_or_fail()
+    confirm_destroy(config)   # the snapshot path still stops and removes the sandbox
     apply_session_flags(config, args)
     exit_with(upgrade.recreate(config, cwd=Path.cwd()))
 
@@ -324,6 +325,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"❌ {e.message}", file=sys.stderr)
         if e.hint:
             print(f"💡 {e.hint}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # Filesystem failures outside the error model (unreadable agy.yaml, read-only state dir)
+        print(f"❌ {e}", file=sys.stderr)
         return 1
     return 0
 

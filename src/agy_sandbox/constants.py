@@ -40,6 +40,8 @@ RECREATE_TAG_PREFIX = "recreate-"
 
 # sbx versions: in-place upgrades need `sbx kit add` with startup hooks (0.48)
 MIN_SBX_VERSION_FOR_UPGRADE = (0, 48, 0)
+SBX_INSTALL_HINT = "Install it with 'brew install docker/tap/sbx' (macOS) or from https://github.com/docker/sbx-releases."
+SBX_UPGRADE_HINT = "brew upgrade docker/tap/sbx"
 PLAN_SCHEMA_VERSION = 1
 
 # Host browser (Chrome on the host, driven from the sandbox via kits/chrome-host)
@@ -48,7 +50,9 @@ HOST_BROWSER_STARTUP_TIMEOUT = 15
 
 # Timeouts (seconds)
 DEFAULT_CMD_TIMEOUT = 10
-REMOVE_CMD_TIMEOUT = 15
+# Stopping a VM can take a while; removal of a stopped one is quick
+STOP_CMD_TIMEOUT = 60
+REMOVE_CMD_TIMEOUT = 30
 # `sbx exec` starts a stopped sandbox first, which runs every kit's startup hooks
 SANDBOX_EXEC_TIMEOUT = 300
 # Builds, snapshots and copies scale with the sandbox; no timeout, only stdin closed

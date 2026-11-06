@@ -23,12 +23,14 @@ from .constants import (
     LONG_TIMEOUT,
     REMOVE_CMD_TIMEOUT,
     SANDBOX_EXEC_TIMEOUT,
+    SBX_INSTALL_HINT,
+    STOP_CMD_TIMEOUT,
 )
 from .errors import SandboxError, SandboxUnavailable
 from .kits import KitRef
 
 NOT_INSTALLED = "Docker Sandboxes CLI ('sbx') is not installed or not on PATH."
-NOT_INSTALLED_HINT = "Install it with 'brew install docker/tap/sbx' (macOS) or from https://github.com/docker/sbx-releases."
+NOT_INSTALLED_HINT = SBX_INSTALL_HINT
 NOT_SIGNED_IN_MARKERS = ("401 Unauthorized", "sbx login")
 _VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 _STDERR_TAIL_LINES = 20
@@ -76,7 +78,8 @@ def _run(argv: Sequence[str], *, timeout: Optional[int]) -> subprocess.Completed
         raise SandboxUnavailable(NOT_INSTALLED, hint=NOT_INSTALLED_HINT, command=cmd)
     except subprocess.TimeoutExpired:
         raise SandboxError(f"'{' '.join(cmd)}' did not finish within {timeout}s.", command=cmd, returncode=-1)
-    _check_signed_in(res.stderr or "", cmd, res.returncode)
+    if res.returncode != 0:
+        _check_signed_in(res.stderr or "", cmd, res.returncode)
     return res
 
 
@@ -129,17 +132,25 @@ def _checked(argv: Sequence[str], *, what: str, timeout: Optional[int] = DEFAULT
 
 
 def _parse_json(text: str, what: str) -> Any:
-    """Parses the JSON document in sbx output, showing any sign-in text printed before it."""
-    starts = [i for i in (text.find("{"), text.find("[")) if i >= 0]
-    start = min(starts) if starts else -1
-    if start < 0:
+    """
+    Parses the JSON document in sbx output. Anything printed before it (a sign-in
+    notice, possibly containing brackets of its own) is shown and skipped: every `{`
+    or `[` is tried as the document start, first one that parses wins.
+    """
+    candidates = [m.start() for m in re.finditer(r"[\[{]", text)]
+    last_error: Optional[Exception] = None
+    for start in candidates:
+        try:
+            doc = json.loads(text[start:])
+        except json.JSONDecodeError as e:
+            last_error = e
+            continue
+        if text[:start].strip():
+            console.info(text[:start].rstrip())
+        return doc
+    if last_error is None:
         raise SandboxError(f"'sbx {what} --json' returned no JSON document.", hint=text.strip() or None)
-    if text[:start].strip():
-        console.info(text[:start].rstrip())
-    try:
-        return json.loads(text[start:])
-    except json.JSONDecodeError as e:
-        raise SandboxError(f"'sbx {what} --json' returned something that is not JSON ({e}).")
+    raise SandboxError(f"'sbx {what} --json' returned something that is not JSON ({last_error}).")
 
 
 def _json(argv: Sequence[str], *, timeout: Optional[int] = DEFAULT_CMD_TIMEOUT) -> Any:
@@ -245,14 +256,18 @@ def create(plan: SandboxPlan) -> None:
     _passthrough(argv, what="create", timeout=LONG_TIMEOUT)
 
 
+def create_from_template_argv(plan: SandboxPlan, template: str) -> List[str]:
+    """The full command line, so a failed recreate can print exactly what to rerun."""
+    return ["sbx", "create", "--name", plan.name, "--template", template, "--pull", "never",
+            *_creation_args(plan), plan.workload.dir, plan.workspace]
+
+
 def create_from_template(plan: SandboxPlan, template: str) -> None:
     """
     `sbx create` on a snapshot of a previous sandbox instead of a fresh workload build.
     Whether a template can seed a v3 composition is verified live (plan §11, gate 2).
     """
-    argv = ["create", "--name", plan.name, "--template", template, "--pull", "never",
-            *_creation_args(plan), plan.workload.dir, plan.workspace]
-    _passthrough(argv, what="create", timeout=LONG_TIMEOUT)
+    _passthrough(create_from_template_argv(plan, template)[1:], what="create", timeout=LONG_TIMEOUT)
 
 
 def attach(name: str, env: Sequence[str] = ()) -> int:
@@ -264,17 +279,22 @@ def attach(name: str, env: Sequence[str] = ()) -> int:
 
 
 def stop(name: str) -> None:
-    _checked(["stop", name], what=f"stop {name}", timeout=REMOVE_CMD_TIMEOUT)
+    _checked(["stop", name], what=f"stop {name}", timeout=STOP_CMD_TIMEOUT)
 
 
 def remove(name: str) -> None:
     """Removes a sandbox (stopping it first). Raises SandboxError if it is still there afterwards."""
     if not exists(name):
         return
+    console.step(f"Stopping sandbox '{name}'...")
+    _run(["stop", name], timeout=STOP_CMD_TIMEOUT)   # best effort: rm -f copes with a running sandbox too
     console.step(f"Removing sandbox '{name}'...")
-    _run(["rm", "-f", name], timeout=REMOVE_CMD_TIMEOUT)
+    res = _run(["rm", "-f", name], timeout=REMOVE_CMD_TIMEOUT)
     if exists(name):
-        raise SandboxError(f"Sandbox '{name}' could not be removed.", hint=f"Remove it manually: sbx rm -f {name}")
+        tail = "\n".join((res.stderr or "").strip().splitlines()[-_STDERR_TAIL_LINES:])
+        raise SandboxError(f"Sandbox '{name}' could not be removed (sbx rm exit {res.returncode}).",
+                           hint=(tail + "\n" if tail else "") + f"Remove it manually: sbx rm -f {name}",
+                           command=["sbx", "rm", "-f", name], returncode=res.returncode, stderr=res.stderr or "")
 
 
 def publish_ports(name: str, ports: Sequence[str]) -> None:
@@ -316,7 +336,10 @@ def save_template(name: str, tag: str) -> None:
 
 
 def remove_template(tag: str) -> None:
-    _run(["template", "rm", "-f", tag], timeout=REMOVE_CMD_TIMEOUT)
+    """Prunes an old snapshot; a failure is reported, not fatal."""
+    res = _run(["template", "rm", "-f", tag], timeout=REMOVE_CMD_TIMEOUT)
+    if res.returncode != 0:
+        console.warn(f"Could not remove template '{tag}' (exit {res.returncode}); remove it with 'sbx template rm -f {tag}'.")
 
 
 def copy_from(name: str, path: str, dest_dir: str) -> None:
