@@ -30,8 +30,11 @@ from .constants import (
     AUTH_MODE_SANDBOX_LOCAL,
     AUTH_MODES,
     DEFAULT_BASE_IMAGE,
+    DEFAULT_BUILD_ARGS,
     DEFAULT_CONFIG_FILE,
+    DEFAULT_ENV_VARS,
     DEFAULT_HOST_BROWSER_PORT,
+    DEFAULT_SETUP_SCRIPTS,
     LEGACY_AUTH_MODES,
     slugify_project_name,
 )
@@ -233,8 +236,6 @@ def default_config(
     project_name: Optional[str] = None,
 ) -> AgyConfig:
     """The config `init` writes: the requested agents and kits on the default build."""
-    from .constants import DEFAULT_BUILD_ARGS, DEFAULT_ENV_VARS, DEFAULT_SETUP_SCRIPTS
-
     config = AgyConfig(
         project_name=project_name or os.path.basename(os.getcwd()),
         agent=agent,

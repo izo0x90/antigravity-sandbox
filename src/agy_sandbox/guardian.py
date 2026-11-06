@@ -6,9 +6,9 @@ login sessions and unsaved git work that would be lost. Runs a single
 from dataclasses import dataclass, field
 from typing import List
 
+from . import console, sandbox
 from .agents import AGENT_SPECS
-from .constants import BANNER_WIDTH
-from . import sandbox
+from .errors import SandboxError
 
 AGENT_HOME = "/home/agent"
 
@@ -56,7 +56,7 @@ def scan(sandbox_name: str, check_git: bool) -> ScanResult:
     result = ScanResult()
     try:
         res = sandbox.exec_script(sandbox_name, scan_script(check_git))
-    except sandbox.SandboxError as e:
+    except SandboxError as e:
         result.error = str(e)
         return result
     if res.returncode != 0:
@@ -77,14 +77,14 @@ def scan(sandbox_name: str, check_git: bool) -> ScanResult:
 
 def report(result: ScanResult) -> None:
     if result.error:
-        print(f"\n⚠️  Could not verify sandbox state ({result.error}). Assuming there may be unsaved work.")
+        console.warn(f"Could not verify sandbox state ({result.error}). Assuming there may be unsaved work.")
         return
     if not result.has_unsaved_work:
         return
-    print("\n" + "!" * BANNER_WIDTH)
-    print("⚠️  CRITICAL: UNSAVED WORK OR ACTIVE SESSIONS DETECTED INSIDE SANDBOX!")
-    print("Destroying this sandbox now will PERMANENTLY delete them.")
-    print("!" * BANNER_WIDTH)
+    lines = [
+        "⚠️  CRITICAL: UNSAVED WORK OR ACTIVE SESSIONS DETECTED INSIDE SANDBOX!",
+        "Destroying this sandbox now will PERMANENTLY delete them.",
+    ]
     sections = (
         ("🔐 Active login/session files:", result.session_files),
         ("📂 Uncommitted / dirty files:", result.dirty_files),
@@ -93,17 +93,17 @@ def report(result: ScanResult) -> None:
     )
     for title, items in sections:
         if items:
-            print(f"\n{title}")
-            for item in items:
-                print(f"  {item}")
-    print("-" * BANNER_WIDTH)
+            lines.append("")
+            lines.append(title)
+            lines.extend(f"  {item}" for item in items)
+    console.banner(lines)
 
 
-def check_for_unsaved_sandbox_work(sandbox_name: str, config) -> bool:
-    """True when destroying the sandbox would lose sessions or git work. Prints the findings."""
-    if not sandbox.sandbox_exists(sandbox_name):
+def check_for_unsaved_sandbox_work(sandbox_name: str, clone: bool) -> bool:
+    """True when destroying the sandbox would lose sessions or git work. Reports the findings."""
+    if not sandbox.exists(sandbox_name):
         return False
-    print("🔍 Code Guardian: scanning sandbox for unsaved work and active sessions...")
-    result = scan(sandbox_name, check_git=config.clone)
+    console.step("🔍 Code Guardian: scanning sandbox for unsaved work and active sessions...")
+    result = scan(sandbox_name, check_git=clone)
     report(result)
     return result.has_unsaved_work

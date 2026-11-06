@@ -12,6 +12,8 @@ from agy_sandbox.constants import SUPPORTED_BUILD_ARGS
 from agy_sandbox.prompts import build_auto_init_prompt
 from agy_sandbox.spec_inspector import extract_json_payload, generate_offline_box_spec, run_read_only_agent_analysis
 
+from tests.support import captured_console
+
 
 def ns(**kw) -> argparse.Namespace:
     base = dict(analyzer=None, agent=None, clone=False, auth="sandbox-local", with_kit=[], dockerfile=False)
@@ -44,7 +46,7 @@ class TestPayloadAndPrompt(unittest.TestCase):
 
     def test_prompt_describes_flat_schema(self):
         prompt = build_auto_init_prompt(agent="claude", clone_enabled=True, kits=["chrome-devtools"], auth_mode="proxy-managed")
-        for fragment in ("READ-ONLY REPOSITORY ANALYSIS", "ubuntu:22.04", "MOJO_VERSION", "mojo-stdlib", "OUTPUT FORMAT",
+        for fragment in ("READ-ONLY REPOSITORY ANALYSIS", "docker.io/sbx/shell-image", "MOJO_VERSION", "mojo-stdlib", "OUTPUT FORMAT",
                          '"agent": "claude"', "['claude', 'chrome-devtools']", '"auth_mode": "proxy-managed"', "opencode"):
             self.assertIn(fragment, prompt)
         self.assertNotIn('"sbx"', prompt)
@@ -105,7 +107,7 @@ class TestAutoInitCommand(InTempDir):
             "recommendations": {"dockerfile_needed": True, "reason": "needs cmake"},
         })
         with patch("agy_sandbox.cli.discover_available_agent", return_value=AGENT_SPECS["agy"]), \
-             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=extract_json_payload(payload)):
+             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=extract_json_payload(payload)), captured_console():
             auto_init_command(ns(analyzer="agy", agent=["opencode"], clone=True, with_kit=["chrome-devtools"]))
         cfg = load_config("agy.yaml")
         self.assertEqual(cfg.project_name, "polyglot-app")
@@ -119,7 +121,7 @@ class TestAutoInitCommand(InTempDir):
     def test_legacy_shaped_analyzer_payload_still_works(self):
         payload = {"project_name": "old-shape", "sbx": {"enabled": True, "agent": "claude", "kits": ["claude", "omp"]}}
         with patch("agy_sandbox.cli.discover_available_agent", return_value=AGENT_SPECS["claude"]), \
-             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=payload):
+             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=payload), captured_console():
             auto_init_command(ns(agent=["claude"]))
         cfg = load_config("agy.yaml")
         self.assertEqual(cfg.agent, "claude")
@@ -129,7 +131,7 @@ class TestAutoInitCommand(InTempDir):
     def test_fallback_to_offline_inspector(self):
         self.write("Cargo.toml", '[package]\nname = "r"\nrust-version = "1.80.0"\n')
         with patch("agy_sandbox.cli.discover_available_agent", return_value=AGENT_SPECS["omp"]), \
-             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=None):
+             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=None), captured_console():
             auto_init_command(ns(analyzer="omp", agent=["omp,prime-agent"], clone=True))
         cfg = load_config("agy.yaml")
         self.assertEqual(cfg.agent, "omp")
@@ -139,7 +141,7 @@ class TestAutoInitCommand(InTempDir):
 
     def test_main_with_unquoted_comma_agents(self):
         with patch("agy_sandbox.cli.discover_available_agent", return_value=None), \
-             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=None):
+             patch("agy_sandbox.cli.run_read_only_agent_analysis", return_value=None), captured_console():
             self.assertEqual(main(["auto-init", "--agent", "omp,", "prime-agent", "--auth", "proxy-managed"]), 0)
         cfg = load_config("agy.yaml")
         self.assertEqual(cfg.kits, ["omp", "prime-agent"])

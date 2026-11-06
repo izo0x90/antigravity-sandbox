@@ -80,7 +80,8 @@ class TestLegacyLayout(unittest.TestCase):
         self.assertTrue(cfg.clone)
         self.assertEqual(cfg.auth_mode, "proxy-managed")
         self.assertEqual(cfg.build_args, {"PYTHON_VERSION": "3.11", "APT_PACKAGES": "cmake jq"})
-        self.assertEqual(len(cfg.migration_notes), 5)
+        self.assertEqual([n.split(";")[0].split(" is ")[0] for n in cfg.migration_notes],
+                         ["the `sbx:` block", "`use_native_login`", "`workspace_path`", "`runtime:`", "`auth_mode: sbx_proxy`"])
         warning = migration_warning(cfg, "agy.yaml")
         self.assertIn("config migrate", warning)
         self.assertIn("`auth_mode: sbx_proxy` is now `auth_mode: proxy-managed`", warning)

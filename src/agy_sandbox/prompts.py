@@ -1,21 +1,24 @@
-from pathlib import Path
 from typing import List, Optional
 
 from .agents import AGENT_SPECS
-from .constants import AUTH_MODES, BASE_DOCKERFILE_NAME, SUPPORTED_BUILD_ARGS
-from .kits import list_bundled_kits
+from .constants import AUTH_MODES, DEFAULT_BASE_IMAGE, SUPPORTED_BUILD_ARGS
+from .kits import bundled_kits
+from .workload import PACKAGED_DOCKERFILE
+
+# What docker.io/sbx/shell-image ships (from its published kit descriptor): the floor
+# every project workload builds on, so the analyzer does not re-install any of it.
+BASE_IMAGE_CONTENTS = (
+    "Debian 13 with bash, git, curl, wget, gh, jq, make, ripgrep, tmux, vim, nano, openssh-client, "
+    "Python 3.14 with pip and uv, sudo, and a Docker engine with compose and buildx"
+)
 
 
-def get_base_dockerfile_content() -> str:
-    """Reads the raw Dockerfile.base content directly from disk."""
-    base_dockerfile_path = Path(__file__).resolve().parent / "docker" / BASE_DOCKERFILE_NAME
-    if base_dockerfile_path.exists():
-        try:
-            with open(base_dockerfile_path, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        except Exception:
-            pass
-    return "# Base Dockerfile not available on disk"
+def get_default_dockerfile_content() -> str:
+    """The packaged default workload Dockerfile, as the analyzer should assume it."""
+    try:
+        return PACKAGED_DOCKERFILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "# Default Dockerfile not available on disk"
 
 
 def build_auto_init_prompt(
@@ -36,14 +39,13 @@ def build_auto_init_prompt(
         if k and k != "." and k not in default_kits:
             default_kits.append(k)
 
-    # 1. Read Level 1 Base Dockerfile
-    base_dockerfile_text = get_base_dockerfile_content()
+    # 1. Read the default workload Dockerfile
+    default_dockerfile_text = get_default_dockerfile_content()
 
     # 2. Dynamically list bundled mixin kits on disk
-    bundled_kits = list_bundled_kits()
     kit_lines = [
-        f"- `{k['name']}`: {k['display_name']} - {k['description']}"
-        for k in bundled_kits
+        f"- `{k.name}`: {k.display_name} - {k.description}"
+        for k in bundled_kits().values()
     ]
     formatted_kits_list = "\n".join(kit_lines) if kit_lines else "- (No bundled mixin kits found)"
 
@@ -64,13 +66,14 @@ def build_auto_init_prompt(
         "You are acting as a Principal Systems & Infrastructure Engineer inspecting this project repository to generate an optimal container sandbox configuration (`agy.yaml`).\n"
         "Your goal is to analyze every layer of this codebase in READ-ONLY mode and produce a complete, self-contained sandbox specification that makes the workspace 100% buildable, testable, and ready for development out of the box. Do NOT edit, write, or modify any files.\n\n"
         "======================================================================\n"
-        "LEVEL 1: PRE-INSTALLED BASE CONTAINER ENVIRONMENT (`Dockerfile.base`)\n"
+        "LEVEL 1: PRE-INSTALLED BASE CONTAINER ENVIRONMENT\n"
         "======================================================================\n"
-        "The sandbox container is built on top of `agy-base`, defined by this exact Dockerfile:\n\n"
+        f"The sandbox runs on `{DEFAULT_BASE_IMAGE}`, which ships: {BASE_IMAGE_CONTENTS}.\n"
+        "On top of it the default project Dockerfile below is applied (build_args drive its ARGs):\n\n"
         "```dockerfile\n"
-        f"{base_dockerfile_text}\n"
+        f"{default_dockerfile_text}\n"
         "```\n\n"
-        "INSTRUCTION: Do NOT re-install utilities or tools that are already installed in Level 1 (e.g., `uv`, `curl`, `git`, `build-essential`, `pkg-config`, `libssl-dev`, `sudo`).\n\n"
+        "INSTRUCTION: Do NOT re-install utilities or tools that are already installed in Level 1 (e.g., `uv`, `curl`, `git`, `build-essential`, `pkg-config`, `libssl-dev`, `sudo`, `jq`, `gh`).\n\n"
         "======================================================================\n"
         "LEVEL 2: PER-PROJECT SPECIFICATION (`agy.yaml`)\n"
         "======================================================================\n"

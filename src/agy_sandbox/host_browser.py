@@ -15,17 +15,15 @@ import time
 from typing import Optional
 import urllib.request
 
-from .constants import HOST_BROWSER_STARTUP_TIMEOUT, HOST_BROWSER_STATE_DIR
+from . import console, paths
+from .constants import HOST_BROWSER_STARTUP_TIMEOUT
+from .errors import HostBrowserError
 
 MACOS_CHROME_BINARIES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
 )
 LINUX_CHROME_BINARIES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
-
-
-class HostBrowserError(RuntimeError):
-    """Raised when the host browser cannot be found, started, or configured."""
 
 
 def find_chrome_binary() -> Optional[str]:
@@ -48,7 +46,7 @@ class HostBrowser:
 
     @classmethod
     def for_sandbox(cls, sandbox_name: str, port: int, headless: bool = False) -> "HostBrowser":
-        return cls(port=port, state_dir=Path(HOST_BROWSER_STATE_DIR).expanduser() / sandbox_name, headless=headless)
+        return cls(port=port, state_dir=paths.host_browser_dir(sandbox_name), headless=headless)
 
     @property
     def profile_dir(self) -> Path:
@@ -79,12 +77,12 @@ class HostBrowser:
     def start(self) -> None:
         """Starts Chrome detached from this process, or reuses one already answering on the port."""
         if self.is_responding():
-            print(f"Reusing host browser already listening on port {self.port}.")
+            console.info(f"Reusing host browser already listening on port {self.port}.")
             return
         if self.is_port_in_use():
             raise HostBrowserError(
                 f"Port {self.port} is in use by something other than Chrome. "
-                "Set sbx.host_browser.port in agy.yaml to a free port."
+                "Set host_browser.port in agy.yaml to a free port."
             )
 
         binary = find_chrome_binary()
@@ -103,7 +101,7 @@ class HostBrowser:
         if self.headless:
             cmd.append("--headless=new")
 
-        print(f"Starting host browser on port {self.port} (profile: {self.profile_dir})...")
+        console.step(f"Starting host browser on port {self.port} (profile: {self.profile_dir})...")
         with open(self.log_file, "ab") as log:
             proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
         self.pid_file.write_text(str(proc.pid))
@@ -134,4 +132,4 @@ class HostBrowser:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
             return
-        print(f"Stopped host browser (pid {pid}).")
+        console.info(f"Stopped host browser (pid {pid}).")

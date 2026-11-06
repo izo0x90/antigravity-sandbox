@@ -245,6 +245,16 @@ def create(plan: SandboxPlan) -> None:
     _passthrough(argv, what="create", timeout=LONG_TIMEOUT)
 
 
+def create_from_template(plan: SandboxPlan, template: str) -> None:
+    """
+    `sbx create` on a snapshot of a previous sandbox instead of a fresh workload build.
+    Whether a template can seed a v3 composition is verified live (plan §11, gate 2).
+    """
+    argv = ["create", "--name", plan.name, "--template", template, "--pull", "never",
+            *_creation_args(plan), plan.workload.dir, plan.workspace]
+    _passthrough(argv, what="create", timeout=LONG_TIMEOUT)
+
+
 def attach(name: str, env: Sequence[str] = ()) -> int:
     """Attaches to an existing sandbox, starting it if stopped; env applies to the session."""
     argv = ["run", "--name", name]

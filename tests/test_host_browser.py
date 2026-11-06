@@ -7,12 +7,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agy_sandbox.config import AgyConfig, HostBrowserConfig, load_config, save_config
-from agy_sandbox.host_browser import HostBrowser, HostBrowserError
+from agy_sandbox.errors import HostBrowserError
+from agy_sandbox.host_browser import HostBrowser
 
-RELAY_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "src/agy_sandbox/kits/chrome-host/files/home/.local/share/agy-sandbox/chrome_host_relay.py"
-)
+from tests.support import captured_console
+
+RELAY_PATH = Path(__file__).resolve().parent.parent / "src/agy_sandbox/kits/chrome-host/chrome_host_relay.py"
 
 
 def load_relay_module():
@@ -47,7 +47,7 @@ class TestHostBrowser(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def test_start_reuses_responding_browser(self):
-        with patch.object(HostBrowser, "is_responding", return_value=True), patch("subprocess.Popen") as mock_popen:
+        with patch.object(HostBrowser, "is_responding", return_value=True), patch("subprocess.Popen") as mock_popen, captured_console():
             self.browser.start()
         mock_popen.assert_not_called()
         self.assertFalse(self.browser.pid_file.exists())
@@ -71,7 +71,7 @@ class TestHostBrowser(unittest.TestCase):
         with patch.object(HostBrowser, "is_responding", side_effect=[False, True]), \
              patch.object(HostBrowser, "is_port_in_use", return_value=False), \
              patch("agy_sandbox.host_browser.find_chrome_binary", return_value="/opt/chrome"), \
-             patch("subprocess.Popen", return_value=proc) as mock_popen:
+             patch("subprocess.Popen", return_value=proc) as mock_popen, captured_console():
             self.browser.start()
 
         cmd = mock_popen.call_args[0][0]
@@ -88,7 +88,7 @@ class TestHostBrowser(unittest.TestCase):
         with patch.object(HostBrowser, "is_responding", return_value=False), \
              patch.object(HostBrowser, "is_port_in_use", return_value=False), \
              patch("agy_sandbox.host_browser.find_chrome_binary", return_value="/opt/chrome"), \
-             patch("subprocess.Popen", return_value=proc):
+             patch("subprocess.Popen", return_value=proc), captured_console():
             with self.assertRaisesRegex(HostBrowserError, "exited during startup"):
                 self.browser.start()
 
@@ -99,7 +99,7 @@ class TestHostBrowser(unittest.TestCase):
 
     def test_stop_kills_browser_it_started(self):
         self.browser.pid_file.write_text("4242")
-        with patch.object(HostBrowser, "is_responding", return_value=True), patch("os.kill") as mock_kill:
+        with patch.object(HostBrowser, "is_responding", return_value=True), patch("os.kill") as mock_kill, captured_console():
             self.browser.stop()
         mock_kill.assert_called_once_with(4242, signal.SIGTERM)
         self.assertFalse(self.browser.pid_file.exists())

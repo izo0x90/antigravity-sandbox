@@ -116,7 +116,30 @@ class TestBundledDescriptors(unittest.TestCase):
                 continue
             text = dockerfile.read_text(encoding="utf-8")
             self.assertNotIn("COPY --chown", text, f"{kit.name}: stage under /out and chown there instead")
+            self.assertNotRegex(text, r"chown -R 1000:1000 /out/home(\s|$)", f"{kit.name}: /home must stay root-owned")
             self.assertTrue(text.startswith("# syntax=docker/dockerfile:1"), kit.name)
+
+    def test_mixins_never_declare_workload_only_things(self):
+        for kit in self.kits.values():
+            self.assertEqual(capabilities(kit.descriptor, "com.docker.sandbox/sbx@1"), [], kit.name)
+            for ctx in capabilities(kit.descriptor, "com.docker.sandbox/agent-context@1"):
+                self.assertNotIn("filename", ctx.get("config") or {}, kit.name)
+            for entry in capabilities(kit.descriptor, LIFECYCLE_CAPABILITY):
+                cfg = entry.get("config") or {}
+                self.assertTrue(cfg.get("install") or cfg.get("startup") or cfg.get("files"), f"{kit.name}: empty lifecycle")
+            for name, arg in (kit.descriptor.get("args") or {}).items():
+                self.assertFalse("default" in arg and arg.get("required"), f"{kit.name}.{name}: default and required")
+
+    def test_credential_kits_are_declaration_only_and_require_their_agent(self):
+        for kit in self.kits.values():
+            if not kit.internal:
+                continue
+            self.assertEqual(capabilities(kit.descriptor, LIFECYCLE_CAPABILITY), [], kit.name)
+            self.assertFalse((kit.path / f"{kit.name}.dockerfile").exists(), kit.name)
+            base = self.kits[kit.name[: -len("-credentials")]]
+            self.assertEqual(kit.descriptor.get("requires"), base.descriptor.get("provides"), kit.name)
+            services = [s for s, _ in kits.credential_services(kit.descriptor)]
+            self.assertEqual(len(services), len(set(services)), f"{kit.name}: duplicate service")
 
     def test_public_listing_hides_credential_kits(self):
         public = bundled_kits()

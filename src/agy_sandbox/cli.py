@@ -1,16 +1,14 @@
 import argparse
-import os
 import shutil
 import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__, engine, images
+from . import __version__, console, engine, upgrade
 from .agents import AGENT_AGY, AGENT_SPECS, discover_available_agent
 from .cli_helpers import (
     SmartArgumentParser,
     find_best_match,
-    format_smart_error,
     preprocess_unquoted_comma_args,
 )
 from .config import AgyConfig, default_config, load_config, migration_warning, save_config
@@ -18,22 +16,15 @@ from .constants import (
     AUTH_MODE_SANDBOX_LOCAL,
     AUTH_MODES,
     DEFAULT_CONFIG_FILE,
-    DEFAULT_DOCKERFILE_NAME,
     EXIT_CODE_INTERRUPTED,
     LOCAL_DOCKERFILE_NAME,
 )
+from .errors import AgyError, ConfigError
 from .guardian import check_for_unsaved_sandbox_work
-from .host_browser import HostBrowserError
-from .kits import bundled_kit_dir, list_bundled_kits
+from .kits import bundled_kit, bundled_kits
 from .prompts import build_auto_init_prompt
-from .sandbox import SandboxError
 from .spec_inspector import generate_offline_box_spec, run_read_only_agent_analysis
-
-CONFIG_HINT = "Run 'agy-sandbox auto-init' to detect project runtimes, or 'agy-sandbox init' to write a template."
-
-
-class CliError(Exception):
-    """A user-facing error: printed as-is, exit code 1."""
+from .workload import PACKAGED_DOCKERFILE
 
 
 # ---------------------------------------------------------------------------
@@ -49,40 +40,44 @@ def parse_agent_list(raw_agents: Optional[List[str]]) -> List[str]:
             if name not in AGENT_SPECS:
                 closest = find_best_match(name, AGENT_SPECS.keys())
                 hint = f" Did you mean '{closest}'?" if closest else f" Available agents: {', '.join(AGENT_SPECS)}"
-                print(f"⚠️  Warning: Unknown agent harness '{name}'.{hint}", file=sys.stderr)
+                console.warn(f"Unknown agent harness '{name}'.{hint}")
             agents.append(name)
     return agents
 
 
 def load_or_fail() -> AgyConfig:
-    try:
-        config = load_config()
-    except FileNotFoundError:
-        raise CliError(format_smart_error(f"Configuration file '{DEFAULT_CONFIG_FILE}' not found.", CONFIG_HINT))
+    config = load_config()
     warning = migration_warning(config)
     if warning:
-        print(warning, file=sys.stderr)
+        console.warn(warning)
     return config
 
 
 def scaffold_dockerfile() -> None:
-    src = Path(__file__).resolve().parent / "docker" / DEFAULT_DOCKERFILE_NAME
-    if not src.exists():
-        raise CliError(f"Default template Dockerfile not found at {src}")
-    shutil.copy(src, Path(LOCAL_DOCKERFILE_NAME))
-    print(f"Created customizable {LOCAL_DOCKERFILE_NAME}")
+    if not PACKAGED_DOCKERFILE.exists():
+        raise ConfigError(f"Default template Dockerfile not found at {PACKAGED_DOCKERFILE}")
+    shutil.copy(PACKAGED_DOCKERFILE, Path(LOCAL_DOCKERFILE_NAME))
+    console.step(f"Created customizable {LOCAL_DOCKERFILE_NAME}")
 
 
 def confirm_destroy(config: AgyConfig) -> None:
     """Runs the guardian and asks before anything that destroys the sandbox."""
-    if not check_for_unsaved_sandbox_work(config.sandbox_name, config):
+    if not check_for_unsaved_sandbox_work(config.sandbox_name, clone=config.clone):
         return
     try:
         confirm = input("Are you absolutely sure you want to destroy this sandbox and lose these changes? [y/N]: ")
     except EOFError:
         confirm = "n"
     if confirm.strip().lower() != "y":
-        raise CliError("Operation aborted. Your uncommitted/unpushed code has been protected! Stay safe, homie!")
+        raise ConfigError("Operation aborted. Your uncommitted/unpushed code has been protected! Stay safe, homie!")
+
+
+def apply_session_flags(config: AgyConfig, args: argparse.Namespace) -> None:
+    if getattr(args, "host_browser", False):
+        config.host_browser.enabled = True
+    for port in getattr(args, "publish", None) or []:
+        if port and port not in config.ports:
+            config.ports.append(port)
 
 
 def add_kit_to_config(name: str) -> None:
@@ -93,29 +88,35 @@ def add_kit_to_config(name: str) -> None:
             config = load_or_fail()
             config.agent = name
             save_config(config)
-            print(f"Set '{name}' as the primary agent in {DEFAULT_CONFIG_FILE} (no kit needed).")
+            console.step(f"Set '{name}' as the primary agent in {DEFAULT_CONFIG_FILE} (no kit needed).")
             return
-    elif not bundled_kit_dir(name):
-        valid = [k["name"] for k in list_bundled_kits()] + list(AGENT_SPECS)
-        closest = find_best_match(name, valid)
-        hint = f"Did you mean '{closest}'?" if closest else f"Available kits: {', '.join(valid)}"
-        raise CliError(format_smart_error(f"Unknown kit or agent '{name}'.", hint))
+    else:
+        kit = bundled_kit(name)
+        if not kit or kit.internal:
+            valid = list(bundled_kits()) + list(AGENT_SPECS)
+            closest = find_best_match(name, valid)
+            hint = f"Did you mean '{closest}'?" if closest else f"Available kits: {', '.join(valid)}"
+            raise ConfigError(f"Unknown kit or agent '{name}'.", hint=hint)
 
     config = load_or_fail()
     if name in config.all_kits():
-        print(f"'{name}' is already configured in {DEFAULT_CONFIG_FILE}.")
+        console.info(f"'{name}' is already configured in {DEFAULT_CONFIG_FILE}.")
         return
     config.kits.append(name)
     config.kits = config.all_kits()
     save_config(config)
-    print(f"Added '{name}' to kits in {DEFAULT_CONFIG_FILE}.")
+    console.step(f"Added '{name}' to kits in {DEFAULT_CONFIG_FILE}.")
+
+
+def exit_with(code: int) -> None:
+    if code != 0:
+        sys.exit(code)
 
 
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
 def init_command(args: argparse.Namespace) -> None:
-    print("Running init command...")
     agents = parse_agent_list(args.agent)
     primary = agents[0] if agents else AGENT_AGY
     config = default_config(
@@ -125,13 +126,12 @@ def init_command(args: argparse.Namespace) -> None:
         auth_mode=args.auth,
     )
     save_config(config)
-    print(f"Created default {DEFAULT_CONFIG_FILE}")
+    console.step(f"Created default {DEFAULT_CONFIG_FILE}")
     if args.dockerfile:
         scaffold_dockerfile()
 
 
 def auto_init_command(args: argparse.Namespace) -> None:
-    print("Running auto-init command...")
     agents = parse_agent_list(args.agent)
     primary = agents[0] if agents else AGENT_AGY
     kits = [k for k in agents[1:] + list(args.with_kit) if k != "."]
@@ -141,24 +141,24 @@ def auto_init_command(args: argparse.Namespace) -> None:
     if analyzer_target in AGENT_SPECS:
         wanted = AGENT_SPECS[analyzer_target]
         if not analyzer:
-            print(f"⚠️  Requested analyzer '{wanted.display_name}' ({analyzer_target}) is not installed on PATH.")
+            console.warn(f"Requested analyzer '{wanted.display_name}' ({analyzer_target}) is not installed on PATH.")
         elif analyzer.identifier != analyzer_target:
-            print(f"⚠️  Requested analyzer '{wanted.display_name}' ({analyzer_target}) is not installed on PATH.")
-            print(f"-> Falling back to available host analyzer '{analyzer.display_name}' ({analyzer.identifier})...")
+            console.warn(f"Requested analyzer '{wanted.display_name}' ({analyzer_target}) is not installed on PATH.")
+            console.info(f"-> Falling back to available host analyzer '{analyzer.display_name}' ({analyzer.identifier})...")
 
-    cwd = os.getcwd()
+    cwd = str(Path.cwd())
     prompt = build_auto_init_prompt(agent=primary, clone_enabled=args.clone, kits=kits, auth_mode=args.auth)
 
     spec_dict = None
     if analyzer:
-        print(f"Analyzing project with {analyzer.display_name} in read-only mode...")
+        console.step(f"Analyzing project with {analyzer.display_name} in read-only mode...")
         spec_dict = run_read_only_agent_analysis(analyzer, prompt, cwd)
     if not spec_dict:
         reason = (
             f"AI analyzer '{analyzer.display_name}' did not return a valid spec payload."
             if analyzer else "No AI harness CLI found on PATH."
         )
-        print(f"⚠️  {reason}\n-> Falling back to local offline inspector (programmatic manifest parser)...")
+        console.warn(f"{reason}\n-> Falling back to local offline inspector (programmatic manifest parser)...")
         spec_dict = generate_offline_box_spec(cwd, explicit_args={"agent": primary, "clone": args.clone, "kits": kits})
 
     # Explicit flags win over whatever the analyzer inferred
@@ -173,71 +173,54 @@ def auto_init_command(args: argparse.Namespace) -> None:
     config = AgyConfig.from_dict(spec_dict)
     config.kits = config.all_kits()
     save_config(config)
-    print(f"Created {DEFAULT_CONFIG_FILE}")
+    console.step(f"Created {DEFAULT_CONFIG_FILE}")
 
     if args.dockerfile or (isinstance(recommendations, dict) and recommendations.get("dockerfile_needed")):
         scaffold_dockerfile()
-    print("Auto-init completed successfully.")
+    console.step("Auto-init completed successfully.")
 
 
 def up_command(args: argparse.Namespace) -> None:
-    print("Running up command...")
     config = load_or_fail()
     if args.rebuild:
         confirm_destroy(config)
-    if args.host_browser:
-        config.host_browser.enabled = True
-    for port in args.publish or []:
-        if port and port not in config.ports:
-            config.ports.append(port)
-    code = engine.up(config, rebuild=args.rebuild)
-    if code != 0:
-        sys.exit(code)
+    apply_session_flags(config, args)
+    exit_with(engine.up(config, rebuild=args.rebuild, cwd=Path.cwd()))
 
 
 def upgrade_command(args: argparse.Namespace) -> None:
-    print("Running upgrade command...")
     config = load_or_fail()
-    if args.host_browser:
-        config.host_browser.enabled = True
-    for port in args.publish or []:
-        if port and port not in config.ports:
-            config.ports.append(port)
-    code = engine.upgrade(config)
-    if code != 0:
-        sys.exit(code)
+    apply_session_flags(config, args)
+    exit_with(upgrade.upgrade(config, cwd=Path.cwd()))
+
+
+def recreate_command(args: argparse.Namespace) -> None:
+    config = load_or_fail()
+    apply_session_flags(config, args)
+    exit_with(upgrade.recreate(config, cwd=Path.cwd()))
 
 
 def down_command(args: argparse.Namespace) -> None:
-    print("Running down command...")
     config = load_or_fail()
     confirm_destroy(config)
     engine.down(config)
 
 
-def update_base_command(args: argparse.Namespace) -> None:
-    """Rebuilds the base image from scratch, and the agent layers of the current project when one is configured."""
-    print("Running update-base command...")
-    images.build_base_image(no_cache=True)
-    if os.path.exists(DEFAULT_CONFIG_FILE):
-        images.build_agent_layers(load_or_fail(), no_cache=True)
-
-
 def agents_list_command(args: argparse.Namespace) -> None:
-    print("Available agent harnesses:")
+    console.info("Available agent harnesses:")
     for agent_id, spec in AGENT_SPECS.items():
         kit = f"kit: {agent_id}" if spec.has_kit else "no kit"
-        print(f"  * {agent_id:<12} - {spec.display_name} ({kit})")
+        console.info(f"  * {agent_id:<12} - {spec.display_name} ({kit})")
 
 
 def kits_list_command(args: argparse.Namespace) -> None:
-    kits = list_bundled_kits()
+    kits = bundled_kits()
     if not kits:
-        print("No bundled kits found.")
+        console.info("No bundled kits found.")
         return
-    print("Available bundled kits:")
-    for kit in kits:
-        print(f"  * {kit['name']:<18} - {kit['display_name']} ({kit['description']})")
+    console.info("Available bundled kits:")
+    for kit in kits.values():
+        console.info(f"  * {kit.name:<18} - {kit.display_name} ({kit.description})")
 
 
 def add_command(args: argparse.Namespace) -> None:
@@ -245,17 +228,14 @@ def add_command(args: argparse.Namespace) -> None:
 
 
 def config_migrate_command(args: argparse.Namespace) -> None:
-    try:
-        config = load_config()
-    except FileNotFoundError:
-        raise CliError(format_smart_error(f"Configuration file '{DEFAULT_CONFIG_FILE}' not found.", CONFIG_HINT))
+    config = load_config()
     if not config.migration_notes:
-        print(f"{DEFAULT_CONFIG_FILE} is already in the current layout.")
+        console.info(f"{DEFAULT_CONFIG_FILE} is already in the current layout.")
         return
     for note in config.migration_notes:
-        print(f"   - {note}")
+        console.info(f"   - {note}")
     save_config(config)
-    print(f"Rewrote {DEFAULT_CONFIG_FILE} in the current layout.")
+    console.step(f"Rewrote {DEFAULT_CONFIG_FILE} in the current layout.")
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +255,11 @@ def _add_init_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--with-kit", action="append", default=[], help="Add a bundled or local mixin kit (repeatable)")
 
 
+def _add_session_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host-browser", action="store_true", help="Drive a Chrome on the host from the sandbox")
+    parser.add_argument("-p", "--publish", action="append", default=[], help="Publish a sandbox port to the host (e.g. 3000:3000)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = SmartArgumentParser(description="Antigravity Sandbox CLI")
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
@@ -290,24 +275,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=auto_init_command)
 
     p = sub.add_parser("up", help="Create or resume the sandbox and attach to it")
-    p.add_argument("--rebuild", action="store_true", help="Rebuild the image and recreate the sandbox from scratch (see 'upgrade' to keep its contents)")
-    p.add_argument("--host-browser", action="store_true", help="Drive a Chrome on the host from the sandbox")
-    p.add_argument("-p", "--publish", action="append", default=[], help="Publish a sandbox port to the host (e.g. 3000:3000)")
+    p.add_argument("--rebuild", action="store_true", help="Recreate the sandbox from scratch (see 'recreate' to keep its contents)")
+    _add_session_options(p)
     p.set_defaults(func=up_command)
 
-    p = sub.add_parser(
-        "upgrade",
-        help="Apply agy.yaml changes (kits, auth_mode, env, ports, host browser) to the existing sandbox, keeping everything inside it",
-    )
-    p.add_argument("--host-browser", action="store_true", help="Drive a Chrome on the host from the sandbox")
-    p.add_argument("-p", "--publish", action="append", default=[], help="Publish a sandbox port to the host (e.g. 3000:3000)")
+    p = sub.add_parser("upgrade", help="Apply agy.yaml additions (kits, env, ports, host browser) to the existing sandbox in place")
+    _add_session_options(p)
     p.set_defaults(func=upgrade_command)
+
+    p = sub.add_parser("recreate", help="Rebuild the sandbox from a snapshot of itself so removed kits, changed kit arguments or a changed login mode apply without losing its contents")
+    _add_session_options(p)
+    p.set_defaults(func=recreate_command)
 
     p = sub.add_parser("down", help="Stop and remove the sandbox")
     p.set_defaults(func=down_command)
-
-    p = sub.add_parser("update-base", help="Rebuild the agy-base image (and the project's agent layers) from scratch")
-    p.set_defaults(func=update_base_command)
 
     agents = sub.add_parser("agents", help="Agent harnesses").add_subparsers(dest="subcommand", required=True)
     agents.add_parser("list", help="List agent harnesses").set_defaults(func=agents_list_command)
@@ -337,13 +318,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         args.func(args)
     except KeyboardInterrupt:
-        print("\n❌ Command interrupted by user. Safe exit.")
+        print("\n❌ Command interrupted by user. Safe exit.", file=sys.stderr)
         return EXIT_CODE_INTERRUPTED
-    except CliError as e:
-        print(str(e) if str(e).startswith("❌") else f"❌ {e}", file=sys.stderr)
-        return 1
-    except (SandboxError, HostBrowserError, ValueError, OSError) as e:
-        print(f"❌ Error: {e}", file=sys.stderr)
+    except AgyError as e:
+        print(f"❌ {e.message}", file=sys.stderr)
+        if e.hint:
+            print(f"💡 {e.hint}", file=sys.stderr)
         return 1
     return 0
 

@@ -54,7 +54,6 @@ SANDBOX_EXEC_TIMEOUT = 300
 # Builds, snapshots and copies scale with the sandbox; no timeout, only stdin closed
 LONG_TIMEOUT = None
 DAEMON_PREFLIGHT_TIMEOUT = 5
-BANNER_WIDTH = 78
 EXIT_CODE_INTERRUPTED = 130
 
 # Default config values

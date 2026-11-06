@@ -7,13 +7,14 @@ import json
 import os
 import time
 from dataclasses import asdict, dataclass
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
 from . import __version__, paths
 from .config import AgyConfig
 from .constants import AUTH_MODE_PROXY_MANAGED, KIT_CHROME_DEVTOOLS, KIT_CHROME_HOST, PLAN_SCHEMA_VERSION
 from .errors import ConfigError
-from .kits import KitRef, credentials_kit, resolve
+from .kits import KitRef, credential_services, credentials_kit, load_descriptor, resolve
 from .workload import WorkloadRef
 
 
@@ -71,25 +72,47 @@ def mixins_for(config: AgyConfig) -> Tuple[KitRef, ...]:
     """
     Mixin order: the primary agent's kit, the configured kits, each followed by its
     `-credentials` kit in proxy-managed mode, then chrome-host when the host browser is on.
+
+    sbx allows one owner per credential (service, phase) in a composition, so two
+    agents that both declare a provider (claude and opencode both use `anthropic`)
+    cannot share a proxy-managed sandbox; that is reported here, before sbx is called.
     """
     chosen: List[KitRef] = []
+    owners: Dict[Tuple[str, str], str] = {}
 
     def add(ref: Optional[KitRef]) -> None:
         if ref and all(ref.source != c.source for c in chosen):
             chosen.append(ref)
 
+    def add_credentials(kit: KitRef) -> None:
+        creds = credentials_kit(kit)
+        if not creds:
+            return
+        for service, phase in credential_services(load_descriptor(Path(creds.source))):
+            owner = owners.setdefault((service, phase), creds.name)
+            if owner != creds.name:
+                raise ConfigError(
+                    f"auth_mode: proxy-managed cannot attach both {owner} and {creds.name}: "
+                    f"both declare the '{service}' credential, and sbx allows one owner per service.",
+                    hint="Keep one of those agents in this sandbox, or use auth_mode: sandbox-local.",
+                )
+        add(creds)
+
     for name in config.all_kits():
         kit = resolve(name)
         add(kit)
         if config.auth_mode == AUTH_MODE_PROXY_MANAGED:
-            add(credentials_kit(kit))
+            add_credentials(kit)
     if config.host_browser.enabled:
         add(resolve(KIT_CHROME_HOST))
     return tuple(chosen)
 
 
 def kit_args_for(config: AgyConfig) -> Tuple[str, ...]:
-    args = [f"{key}={value}" for key, value in config.kit_args.items()]
+    """agy.yaml kit_args, plus chrome-host's port when the host browser is on (host_browser.port wins)."""
+    port_arg = f"{KIT_CHROME_HOST}.host_port"
+    args = [f"{key}={value}" for key, value in config.kit_args.items()
+            if not (config.host_browser.enabled and key == port_arg)]
     if config.host_browser.enabled:
         args += host_browser_kit_args(config)
     return tuple(args)
@@ -107,6 +130,75 @@ def plan(config: AgyConfig, *, workspace: str, workload: WorkloadRef) -> Sandbox
         kit_args=kit_args_for(config),
         env=tuple(config.env),
         ports=tuple(config.ports),
+    )
+
+
+# ---------------------------------------------------------------------------
+# drift: what changed between the plan a sandbox was built with and the plan agy.yaml asks for
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Drift:
+    added: Tuple[KitRef, ...]
+    removed: Tuple[str, ...]
+    kit_args_changed: Tuple[str, ...]
+    workload_changed: bool
+    clone_changed: bool
+    auth_mode_changed: bool
+
+    @property
+    def in_place(self) -> bool:
+        """
+        True when sbx can apply everything to the existing sandbox: additions only. A
+        login-mode change is excluded even though it only adds or removes credential
+        kits, because the agent kits seed their credential-dependent config at install.
+        """
+        return not (self.removed or self.kit_args_changed or self.workload_changed or self.clone_changed
+                    or self.auth_mode_changed)
+
+    @property
+    def empty(self) -> bool:
+        return not (self.added or self.removed or self.kit_args_changed or self.workload_changed
+                    or self.clone_changed or self.auth_mode_changed)
+
+    def reasons(self) -> List[str]:
+        out: List[str] = []
+        if self.auth_mode_changed:
+            out.append("login mode (auth_mode) changed; agent kits seed their credential config when the sandbox is created")
+        for name in self.removed:
+            out.append(f"kit removed: {name}")
+        for name in self.kit_args_changed:
+            out.append(f"kit arguments changed: {name}")
+        if self.workload_changed:
+            out.append("workload changed (Dockerfile.agy, build_args or setup_scripts)")
+        if self.clone_changed:
+            out.append("clone mode changed (fixed at creation; use 'agy-sandbox up --rebuild')")
+        return out
+
+
+def kit_args_for_kit(kit_args: Sequence[str], kit: str) -> FrozenSet[str]:
+    """Arguments that apply to one kit: `<kit>.name=value` entries plus unscoped `name=value` ones."""
+    chosen = set()
+    for arg in kit_args:
+        key = arg.split("=", 1)[0]
+        if "." not in key or key.startswith(kit + "."):
+            chosen.add(arg)
+    return frozenset(chosen)
+
+
+def diff(saved: SandboxPlan, wanted: SandboxPlan) -> Drift:
+    saved_sources = {m.source for m in saved.mixins}
+    wanted_sources = {m.source for m in wanted.mixins}
+    added = tuple(m for m in wanted.mixins if m.source not in saved_sources)
+    removed = tuple(m.name for m in saved.mixins if m.source not in wanted_sources)
+    common = [m.name for m in wanted.mixins if m.source in saved_sources]
+    changed = tuple(sorted(k for k in common if kit_args_for_kit(saved.kit_args, k) != kit_args_for_kit(wanted.kit_args, k)))
+    return Drift(
+        added=added,
+        removed=removed,
+        kit_args_changed=changed,
+        workload_changed=saved.workload.fingerprint != wanted.workload.fingerprint,
+        clone_changed=saved.clone != wanted.clone,
+        auth_mode_changed=saved.auth_mode != wanted.auth_mode,
     )
 
 
@@ -129,6 +221,8 @@ def load_plan(name: str) -> Optional[SandboxPlan]:
         data: Dict = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise ConfigError(f"Saved sandbox plan {path} is unreadable: {e}", hint="Delete it and run 'agy-sandbox up --rebuild'.")
+    if not isinstance(data, dict):
+        raise ConfigError(f"Saved sandbox plan {path} is not a JSON object.", hint="Delete it and run 'agy-sandbox up --rebuild'.")
     schema = int(data.get("schema") or 0)
     if schema > PLAN_SCHEMA_VERSION:
         raise ConfigError(

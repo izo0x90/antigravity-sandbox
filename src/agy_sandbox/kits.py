@@ -13,7 +13,7 @@ attached next to it only in proxy-managed mode.
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -97,17 +97,8 @@ def bundled_kits(include_internal: bool = False) -> Dict[str, BundledKit]:
     if not KITS_DIR.is_dir():
         return kits
     for kit_dir in sorted(KITS_DIR.iterdir()):
-        if not kit_dir.is_dir() or not descriptor_path(kit_dir):
-            continue
-        descriptor = load_descriptor(kit_dir)
-        kit = BundledKit(
-            name=kit_dir.name,
-            display_name=str(descriptor.get("displayName") or kit_dir.name),
-            description=str(descriptor.get("description") or ""),
-            path=kit_dir,
-            descriptor=descriptor,
-        )
-        if kit.internal and not include_internal:
+        kit = bundled_kit(kit_dir.name) if kit_dir.is_dir() else None
+        if kit is None or (kit.internal and not include_internal):
             continue
         kits[kit.name] = kit
     return kits
@@ -120,7 +111,25 @@ def bundled_kit(name: str) -> Optional[BundledKit]:
     kit_dir = KITS_DIR / name
     if not kit_dir.is_dir() or not descriptor_path(kit_dir):
         return None
-    return bundled_kits(include_internal=True).get(name)
+    descriptor = load_descriptor(kit_dir)
+    return BundledKit(
+        name=kit_dir.name,
+        display_name=str(descriptor.get("displayName") or kit_dir.name),
+        description=str(descriptor.get("description") or ""),
+        path=kit_dir,
+        descriptor=descriptor,
+    )
+
+
+def credential_services(descriptor: dict) -> List[Tuple[str, str]]:
+    """Every (service, phase) a descriptor's credential@1 entries own."""
+    owned: List[Tuple[str, str]] = []
+    for entry in capabilities(descriptor, CREDENTIAL_CAPABILITY):
+        cfg = entry.get("config") or {}
+        phases = cfg.get("phase") or "runtime"
+        for phase in (phases if isinstance(phases, list) else [phases]):
+            owned.append((str(cfg.get("service")), str(phase)))
+    return owned
 
 
 def _remote_name(ref: str) -> str:

@@ -29,16 +29,24 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(p.workspace, "/w")
 
     def test_proxy_managed_adds_credentials_kits_after_their_agent(self):
-        p = make_plan(auth_mode="proxy-managed", kits=["claude", "opencode", "chrome-devtools"])
-        self.assertEqual(p.mixin_names(), ["claude", "claude-credentials", "opencode", "opencode-credentials", "chrome-devtools"])
+        p = make_plan(auth_mode="proxy-managed", kits=["claude", "codex", "chrome-devtools"])
+        self.assertEqual(p.mixin_names(), ["claude", "claude-credentials", "codex", "codex-credentials", "chrome-devtools"])
         self.assertTrue(all(m.bundled for m in p.mixins))
+
+    def test_proxy_managed_refuses_two_agents_that_share_a_credential_service(self):
+        with self.assertRaises(ConfigError) as ctx:
+            make_plan(auth_mode="proxy-managed", kits=["claude", "opencode"])
+        self.assertIn("'anthropic'", ctx.exception.message)
+        self.assertIn("sandbox-local", ctx.exception.hint)
+        make_plan(auth_mode="sandbox-local", kits=["claude", "opencode"])   # fine without credential kits
 
     def test_agents_without_credentials_kit_get_none(self):
         p = make_plan(auth_mode="proxy-managed", agent="omp", kits=["omp"])
         self.assertEqual(p.mixin_names(), ["omp"])
 
     def test_host_browser_appends_chrome_host_and_its_port_argument(self):
-        p = make_plan(host_browser=HostBrowserConfig(enabled=True, port=9333), kit_args={"agy-credentials.auth_method": "gcp"})
+        p = make_plan(host_browser=HostBrowserConfig(enabled=True, port=9333),
+                      kit_args={"agy-credentials.auth_method": "gcp", "chrome-host.host_port": "1"})
         self.assertEqual(p.mixin_names()[-1], "chrome-host")
         self.assertEqual(p.kit_args, ("agy-credentials.auth_method=gcp", "chrome-host.host_port=9333"))
 

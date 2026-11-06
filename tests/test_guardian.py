@@ -4,7 +4,9 @@ from unittest.mock import patch
 
 from agy_sandbox import guardian
 from agy_sandbox.config import AgyConfig
-from agy_sandbox.sandbox import SandboxError
+from agy_sandbox.errors import SandboxError
+
+from tests.support import captured_console
 
 
 def completed(stdout="", code=0, stderr=""):
@@ -42,14 +44,15 @@ class TestGuardian(unittest.TestCase):
 
     def test_check_for_unsaved_sandbox_work_single_exec(self):
         config = AgyConfig(project_name="demo", clone=True)
-        with patch("agy_sandbox.sandbox.sandbox_exists", return_value=True), \
+        with patch("agy_sandbox.sandbox.exists", return_value=True), \
              patch("agy_sandbox.sandbox.exec_script", return_value=completed("SESSION /home/agent/.claude.json\n")) as ex, \
-             patch("builtins.print"):
-            self.assertTrue(guardian.check_for_unsaved_sandbox_work(config.sandbox_name, config))
+             captured_console() as out:
+            self.assertTrue(guardian.check_for_unsaved_sandbox_work(config.sandbox_name, clone=config.clone))
         self.assertEqual(ex.call_count, 1)
-        with patch("agy_sandbox.sandbox.sandbox_exists", return_value=False), \
+        self.assertTrue(any(level == "banner" for level, _ in out))
+        with patch("agy_sandbox.sandbox.exists", return_value=False), \
              patch("agy_sandbox.sandbox.exec_script") as ex:
-            self.assertFalse(guardian.check_for_unsaved_sandbox_work(config.sandbox_name, config))
+            self.assertFalse(guardian.check_for_unsaved_sandbox_work(config.sandbox_name, clone=config.clone))
         ex.assert_not_called()
 
 

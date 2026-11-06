@@ -1,0 +1,155 @@
+"""
+Applying agy.yaml changes to a sandbox that already exists.
+
+  upgrade   only what sbx can do in place: add kits (`sbx kit add`), env, ports.
+            Refuses anything else, naming the change and the command to use.
+  recreate  snapshot the filesystem, carry kit volumes and the clone workspace
+            out, destroy, create again from the snapshot, restore. For removed
+            kits, changed kit arguments and a changed login mode.
+
+Both compare the saved plan (what the sandbox was built with) against the plan
+agy.yaml asks for now (compose.diff); nothing is inferred from `sbx inspect`.
+"""
+import shutil
+import time
+from dataclasses import replace
+from pathlib import Path
+from typing import List, Tuple
+
+from . import compose, console, kits, paths, sandbox
+from .compose import SandboxPlan, kit_args_for_kit
+from .config import AgyConfig
+from .constants import MIN_SBX_VERSION_FOR_UPGRADE, RECREATE_TAG_PREFIX
+from .engine import desired_plan, host_browser_for, report_missing_secrets
+from .errors import UpgradeRefused
+
+
+def _require_exists(name: str) -> None:
+    if not sandbox.exists(name):
+        raise UpgradeRefused([f"sandbox '{name}' does not exist"], hint="Create it with 'agy-sandbox up'.")
+
+
+def _finish(config: AgyConfig, plan: SandboxPlan) -> int:
+    compose.save_plan(plan)
+    report_missing_secrets(config)
+    if config.host_browser.enabled:
+        host_browser_for(config).start()
+    return sandbox.attach(plan.name, env=plan.env)
+
+
+# ---------------------------------------------------------------------------
+# upgrade: in place
+# ---------------------------------------------------------------------------
+def upgrade(config: AgyConfig, cwd: Path) -> int:
+    compose.validate_host_browser(config)
+    version = sandbox.require()
+    if version.as_tuple < MIN_SBX_VERSION_FOR_UPGRADE:
+        needed = ".".join(str(n) for n in MIN_SBX_VERSION_FOR_UPGRADE)
+        raise UpgradeRefused(
+            [f"sbx {needed} or newer is needed for in-place upgrades (found {version})"],
+            hint="brew upgrade --cask sbx",
+        )
+    name = config.sandbox_name
+    _require_exists(name)
+    saved = compose.load_plan(name)
+    if saved is None:
+        raise UpgradeRefused(
+            [f"sandbox '{name}' was created by an older agy-sandbox and has no saved plan"],
+            hint="Use 'agy-sandbox recreate' to rebuild it with its contents, or 'agy-sandbox up --rebuild'.",
+        )
+    wanted = desired_plan(config, cwd)
+    drift = compose.diff(saved, wanted)
+    if not drift.in_place:
+        raise UpgradeRefused(drift.reasons(), hint="Run 'agy-sandbox recreate' to apply it while keeping the sandbox's contents.")
+
+    console.step(f"Upgrading sandbox '{name}' in place ({config.auth_mode} logins)")
+    for kit in drift.added:
+        console.step(f"   adding kit: {kit.name}")
+        sandbox.kit_add(name, kit, sorted(kit_args_for_kit(wanted.kit_args, kit.name)))
+    if not drift.added:
+        console.info("   kits unchanged; applying env and ports")
+    sandbox.publish_ports(name, wanted.ports)
+    return _finish(config, wanted)
+
+
+# ---------------------------------------------------------------------------
+# recreate: snapshot, carry, destroy, restore
+# ---------------------------------------------------------------------------
+def carry_paths(saved: SandboxPlan, wanted: SandboxPlan) -> List[str]:
+    """What `sbx rm` would delete: the clone workspace and every declared kit volume."""
+    carry: List[str] = [saved.workspace] if saved.clone else []
+    for path in kits.volume_paths([*saved.mixins, *wanted.mixins]):
+        if path not in carry:
+            carry.append(path)
+    return carry
+
+
+def recreate(config: AgyConfig, cwd: Path) -> int:
+    compose.validate_host_browser(config)
+    sandbox.require()
+    name = config.sandbox_name
+    _require_exists(name)
+    saved = compose.load_plan(name)
+    wanted = desired_plan(config, cwd)
+    if saved is None:
+        info = sandbox.inspect(name)
+        saved = replace(wanted, clone=info.clone, workspace=info.workspace or wanted.workspace, mixins=())
+        console.warn(f"Sandbox '{name}' has no saved plan (created by an older agy-sandbox); "
+                     "kit volumes are carried over only for the kits agy.yaml lists now.")
+    elif saved.clone != wanted.clone:
+        console.warn(f"agy.yaml says clone: {wanted.clone} but the sandbox was created with clone: {saved.clone}; "
+                     "clone mode is fixed at creation and is kept.")
+    plan = replace(wanted, clone=saved.clone, workspace=saved.workspace)
+
+    console.step(f"Recreating sandbox '{name}' ({config.auth_mode} logins) from a snapshot of its filesystem")
+    console.info(f"   kits: {' '.join(plan.mixin_names()) or '(none)'}")
+
+    # 1. Carry out what `sbx rm` would delete.
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    staging = paths.recreate_staging(name, stamp)
+    staged: List[Tuple[str, str]] = []
+    carry = carry_paths(saved, plan)
+    if carry:
+        console.step("Carrying out the clone workspace and kit volumes..." if plan.clone else "Carrying out kit volumes...")
+        sandbox.exec_script(name, "true")  # a stopped sandbox is started so cp can read it
+        for index, path in enumerate(carry):
+            dest = staging / str(index)
+            sandbox.copy_from(name, path, str(dest))
+            staged.append((path, str(dest / Path(path).name)))
+
+    # 2. Snapshot the whole container filesystem, then replace the sandbox.
+    tag = f"{name}:{RECREATE_TAG_PREFIX}{stamp}"
+    sandbox.stop(name)
+    console.step(f"Snapshotting '{name}' as template '{tag}'...")
+    sandbox.save_template(name, tag)
+    sandbox.remove(name)
+    try:
+        sandbox.create_from_template(plan, tag)
+    except Exception:
+        console.warn(f"The sandbox could not be recreated. Its snapshot is template '{tag}'"
+                     + (f" and its carried-out data is under {staging}" if staged else "") + ".")
+        console.info(f"   Restore it with: sbx create --name {name} --template {tag} --pull never"
+                     + (" --clone" if plan.clone else "") + f" {plan.workload.dir} {plan.workspace}")
+        raise
+
+    # 3. Put the carried-out data back and hand it to the agent user.
+    for path, src in staged:
+        parent = str(Path(path).parent)
+        sandbox.exec_script(name, f"mkdir -p '{path}' && find '{path}' -mindepth 1 -delete", user="root")
+        sandbox.copy_to(src, name, parent)
+        sandbox.exec_script(name, f"chown -R agent:agent '{path}'", user="root")
+    if staged:
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            staging.parent.rmdir()
+        except OSError:
+            pass
+        console.step("Restored the carried-out data.")
+
+    # 4. Keep this snapshot as the rollback point; older ones for this sandbox go.
+    for image in sandbox.list_templates():
+        repo, old_tag = str(image.get("repository", "")), str(image.get("tag", ""))
+        if repo.endswith(name) and old_tag.startswith(RECREATE_TAG_PREFIX) and old_tag != tag.split(":")[1]:
+            sandbox.remove_template(f"{name}:{old_tag}")
+    console.step(f"Recreate complete. Snapshot kept as '{tag}' for rollback.")
+    return _finish(config, plan)

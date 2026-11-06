@@ -47,23 +47,19 @@ capabilities:
   - type: com.docker.sandbox/lifecycle@1
     config:
       startup:
+        # Deep-merged with jq rather than written whole, so user-added servers and
+        # settings in opencode.json survive every boot.
         - command: |
             set -e
             [ -n "$MCP_GATEWAY_URL" ] || exit 0
-            mkdir -p "$HOME/.config/opencode"
-            cat > "$HOME/.config/opencode/opencode.json" <<EOF
-            {
-              "\$schema": "https://opencode.ai/config.json",
-              "mcp": {
-                "mcp-gateway": {
-                  "type": "remote",
-                  "url": "$MCP_GATEWAY_URL",
-                  "enabled": true,
-                  "headers": { "Authorization": "Bearer $MCP_SENTINEL_TOKEN_NAME" }
-                }
-              }
-            }
-            EOF
+            cfg="$HOME/.config/opencode/opencode.json"
+            mkdir -p "$(dirname "$cfg")"
+            [ -s "$cfg" ] || printf '{"\044schema":"https://opencode.ai/config.json"}\n' > "$cfg"
+            frag=$(mktemp)
+            printf '{"mcp":{"mcp-gateway":{"type":"remote","url":"%s","enabled":true,"headers":{"Authorization":"Bearer %s"}}}}' "$MCP_GATEWAY_URL" "$MCP_SENTINEL_TOKEN_NAME" > "$frag"
+            jq -s '.[0] * .[1]' "$cfg" "$frag" > "$cfg.tmp"
+            mv "$cfg.tmp" "$cfg"
+            rm -f "$frag"
           user: agent
           env: [MCP_GATEWAY_URL, MCP_SENTINEL_TOKEN_NAME]
           description: Register the sandbox MCP gateway in ~/.config/opencode/opencode.json

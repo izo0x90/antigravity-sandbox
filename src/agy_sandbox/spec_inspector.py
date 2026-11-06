@@ -4,6 +4,7 @@ import re
 import subprocess
 from typing import Any, Dict, Optional
 
+from . import console
 from .agents import AgentSpec
 from .constants import (
     AUTH_MODE_SANDBOX_LOCAL,
@@ -67,7 +68,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
     files = set(os.listdir(cwd)) if os.path.isdir(cwd) else set()
 
-    print("🔍 [Offline Inspector] Programmatically scanning repository manifests...")
+    console.info("🔍 [Offline Inspector] Programmatically scanning repository manifests...")
 
     # Python
     if any(f in files for f in ("pyproject.toml", "requirements.txt", "Pipfile", "environment.yml", ".python-version")):
@@ -96,7 +97,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
         py_setup = "uv sync" if ("uv.lock" in files or "pyproject.toml" in files) else "pip install -r requirements.txt"
         setup_scripts.append(py_setup)
-        print(f"  * Python: Found {py_file} -> extracted PYTHON_VERSION={python_ver} (setup: {py_setup})")
+        console.info(f"  * Python: Found {py_file} -> extracted PYTHON_VERSION={python_ver} (setup: {py_setup})")
 
     # Node.js
     if any(f in files for f in ("package.json", ".nvmrc", ".node-version")):
@@ -126,7 +127,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
         node_setup = "pnpm install" if "pnpm-lock.yaml" in files else ("yarn install" if "yarn.lock" in files else "npm install")
         setup_scripts.append(node_setup)
-        print(f"  * Node.js: Found {node_file} -> extracted NODE_VERSION={node_ver} (setup: {node_setup})")
+        console.info(f"  * Node.js: Found {node_file} -> extracted NODE_VERSION={node_ver} (setup: {node_setup})")
 
     # Rust
     if any(f in files for f in ("Cargo.toml", "rust-toolchain.toml", "rust-toolchain")):
@@ -154,7 +155,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
 
         build_args["RUST_VERSION"] = rust_ver
         setup_scripts.append("cargo fetch")
-        print(f"  * Rust: Found {toolchain_file} -> extracted RUST_VERSION={rust_ver} (setup: cargo fetch)")
+        console.info(f"  * Rust: Found {toolchain_file} -> extracted RUST_VERSION={rust_ver} (setup: cargo fetch)")
 
     # Go (Unsupported runtime key -> mapped to APT_PACKAGES: golang-go)
     if "go.mod" in files:
@@ -162,14 +163,14 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
         if "golang-go" not in apt_pkgs:
             build_args["APT_PACKAGES"] = f"{apt_pkgs} golang-go".strip()
         setup_scripts.append("go mod download")
-        print("  * Go: Found go.mod -> added 'golang-go' to APT_PACKAGES (setup: go mod download)")
+        console.info("  * Go: Found go.mod -> added 'golang-go' to APT_PACKAGES (setup: go mod download)")
 
     # Mojo / Pixi
     if any(f in files for f in ("mojoproject.toml", "pixi.toml")) or any(f.endswith(".mojo") for f in files):
         mojo_ver = DEFAULT_BUILD_ARGS.get("MOJO_VERSION", "latest")
         build_args["MOJO_VERSION"] = mojo_ver
         mojo_file = "mojoproject.toml" if "mojoproject.toml" in files else ("pixi.toml" if "pixi.toml" in files else "mojo source")
-        print(f"  * Mojo: Found {mojo_file} -> extracted MOJO_VERSION={mojo_ver}")
+        console.info(f"  * Mojo: Found {mojo_file} -> extracted MOJO_VERSION={mojo_ver}")
 
     # Makefile setup target detection
     if "Makefile" in files:
@@ -179,11 +180,11 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
                 if re.search(r"^setup:", content, flags=re.MULTILINE):
                     if "make setup" not in setup_scripts:
                         setup_scripts.append("make setup")
-                        print("  * Build: Found Makefile -> added 'make setup' to setup_scripts")
+                        console.info("  * Build: Found Makefile -> added 'make setup' to setup_scripts")
                 elif re.search(r"^init:", content, flags=re.MULTILINE):
                     if "make init" not in setup_scripts:
                         setup_scripts.append("make init")
-                        print("  * Build: Found Makefile -> added 'make init' to setup_scripts")
+                        console.info("  * Build: Found Makefile -> added 'make init' to setup_scripts")
         except Exception:
             pass
 
@@ -203,7 +204,7 @@ def generate_offline_box_spec(cwd: str, explicit_args: Optional[Dict[str, Any]] 
                                 env_vars.append(env_entry)
                                 added_count += 1
             if added_count > 0:
-                print(f"  * Environment: Found {env_file} -> extracted {added_count} default variable(s)")
+                console.info(f"  * Environment: Found {env_file} -> extracted {added_count} default variable(s)")
         except Exception:
             pass
 

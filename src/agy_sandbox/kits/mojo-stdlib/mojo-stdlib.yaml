@@ -7,16 +7,11 @@ version: "1.0.0"
 provides: ["mojo-stdlib"]
 
 capabilities:
+  # Bazel fetches toolchains and dependencies from wherever the workspace points.
   - type: com.docker.sandbox/network-policy@1
     config:
       runtime:
-        allow:
-          - github.com
-          - objects.githubusercontent.com
-          - release-assets.githubusercontent.com
-          - pypi.org
-          - files.pythonhosted.org
-          - "*"
+        allow: ["*"]
 
   - type: com.docker.sandbox/lifecycle@1
     config:
@@ -31,7 +26,7 @@ capabilities:
             fi
             if ! command -v lit >/dev/null 2>&1; then
               echo "-> Installing the LLVM lit test runner..."
-              sudo uv pip install --system lit || sudo pip install lit
+              sudo uv pip install --system --break-system-packages lit
             fi
           user: "1000"
           description: Install Bazelisk and LLVM lit
