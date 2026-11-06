@@ -1,61 +1,56 @@
-# Default Antigravity Sandbox Development Environment Dockerfile
+# syntax=docker/dockerfile:1
+# Default agy-sandbox workload: the project image every sandbox runs on.
 #
-# This template defines the base runtimes for your sandbox environment.
-# It is loaded by default from the agy-sandbox package directory.
-#
-# To copy this Dockerfile to your project root for full local customization, run:
-#   agy-sandbox init --dockerfile
-#
-# Custom build arguments (ARGs) below are dynamically overridden via your 'agy.yaml'.
-
-ARG BASE_IMAGE=agy-base:latest
+# Copy it to your project as Dockerfile.agy to customise it (agy-sandbox init --dockerfile).
+# ARG values come from build_args in agy.yaml; BASE_IMAGE from base_image. The base is
+# Docker's agentless sandbox image (Debian, bash, git, curl, gh, jq, make, python, uv,
+# sudo, docker) and the image must end as the `agent` user.
+ARG BASE_IMAGE=docker.io/sbx/shell-image:latest
 FROM ${BASE_IMAGE}
+USER root
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Define build arguments with default values of "none" (opt-in via build_args in agy.yaml)
 ARG PYTHON_VERSION=none
 ARG NODE_VERSION=none
 ARG RUST_VERSION=none
 ARG MOJO_VERSION=none
 ARG APT_PACKAGES=""
 
-# Set global environment variables so cargo, rustup, pixi, and mojo are accessible to all users
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo \
-    PIXI_HOME=/usr/local/pixi \
+# Build toolchain, extra packages, and terminfo for modern terminals.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential pkg-config libssl-dev ncurses-term ncurses-bin ${APT_PACKAGES} \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /lib/terminfo && for t in \
+      https://raw.githubusercontent.com/kovidgoyal/kitty/master/terminfo/kitty.terminfo \
+      https://raw.githubusercontent.com/alacritty/alacritty/master/extra/alacritty.info \
+      https://raw.githubusercontent.com/ghostty-org/ghostty/main/terminfo/ghostty.terminfo \
+      https://raw.githubusercontent.com/wezterm/wezterm/main/termwiz/data/wezterm.terminfo; do \
+      curl -fsSL "$t" -o /tmp/t.info && tic -x -o /lib/terminfo /tmp/t.info; done && rm -f /tmp/t.info
+
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PIXI_HOME=/usr/local/pixi \
     PATH=/usr/local/cargo/bin:/usr/local/pixi/bin:$PATH
 
-# --- RUNTIME SETUP ---
-
-# Install extra system packages if specified in build_args.APT_PACKAGES
-RUN if [ -n "${APT_PACKAGES}" ]; then \
-      apt-get update && apt-get install -y ${APT_PACKAGES} && \
-      rm -rf /var/lib/apt/lists/* ; \
-    fi
-
-# Install Python (Only if explicitly requested in build_args.PYTHON_VERSION)
+# Python (only when build_args.PYTHON_VERSION is set)
 RUN if [ "${PYTHON_VERSION}" != "none" ]; then \
       uv python install ${PYTHON_VERSION} && \
-      ln -sf $(uv python find ${PYTHON_VERSION}) /usr/local/bin/python && \
-      ln -sf $(uv python find ${PYTHON_VERSION}) /usr/local/bin/python3 ; \
-    fi
+      ln -sf "$(uv python find ${PYTHON_VERSION})" /usr/local/bin/python && \
+      ln -sf "$(uv python find ${PYTHON_VERSION})" /usr/local/bin/python3; fi
 
-# Install Node.js (Only if explicitly requested in build_args.NODE_VERSION)
+# Node.js (only when build_args.NODE_VERSION is set)
 RUN if [ "${NODE_VERSION}" != "none" ]; then \
       curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
-      apt-get install -y nodejs && \
-      rm -rf /var/lib/apt/lists/* ; \
-    fi
+      apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*; fi
 
-# Install Rust toolchain (Only if explicitly requested in build_args.RUST_VERSION)
+# Rust (only when build_args.RUST_VERSION is set)
 RUN if [ "${RUST_VERSION}" != "none" ]; then \
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal && \
-      chmod -R a+w /usr/local/cargo /usr/local/rustup ; \
-    fi
+      chmod -R a+w /usr/local/cargo /usr/local/rustup; fi
 
-# Install Pixi and global Modular Mojo / MAX toolchain (Only if explicitly requested in build_args.MOJO_VERSION)
+# Mojo / MAX via pixi (only when build_args.MOJO_VERSION is set)
 RUN if [ "${MOJO_VERSION}" != "none" ]; then \
-      curl -fsSL https://pixi.sh/install.sh | PIXI_HOME=/usr/local/pixi sh && \
-      chmod -R a+w /usr/local/pixi && \
+      curl -fsSL https://pixi.sh/install.sh | PIXI_HOME=/usr/local/pixi sh && chmod -R a+w /usr/local/pixi && \
       pixi global install --channel https://conda.modular.com/max-nightly --channel conda-forge mojo && \
-      chmod -R a+w /usr/local/pixi ; \
-    fi
+      chmod -R a+w /usr/local/pixi; fi
+
+USER agent
+WORKDIR /home/agent

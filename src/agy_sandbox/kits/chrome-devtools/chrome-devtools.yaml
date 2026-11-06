@@ -1,0 +1,86 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+kind: mixin
+displayName: Chrome DevTools MCP
+description: Headless Chromium plus the chrome-devtools-mcp server for browser automation and debugging.
+version: "1.0.0"
+provides: ["chrome-devtools"]
+
+capabilities:
+  # Chromium and chrome-devtools-mcp are installed at first start, and the agent
+  # browses arbitrary sites through them.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow: ["*"]
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      startup:
+        - command: |
+            set -u
+            # Host-browser mode: the chrome-host kit relays a Chrome on the host to
+            # 127.0.0.1:9222, so the in-sandbox Chromium (steps 1-2) is skipped.
+            HOST_BROWSER_MODE="${CHROME_DEVTOOLS_HOST_BROWSER:-0}"
+
+            # 1. Install Chromium on first start (idempotent)
+            if [ "$HOST_BROWSER_MODE" = "1" ]; then
+              echo "-> Host browser mode: using the host Chrome relayed to 127.0.0.1:9222."
+            elif ! command -v chromium >/dev/null 2>&1; then
+              echo "-> Installing Chromium..."
+              sudo apt-get -o DPkg::Lock::Timeout=300 update -qq
+              sudo apt-get -o DPkg::Lock::Timeout=300 install -y -qq chromium fonts-liberation
+            fi
+
+            # 2. Start headless Chromium (port 9222 belongs to the relay in host-browser mode)
+            if [ "$HOST_BROWSER_MODE" != "1" ] && command -v chromium >/dev/null 2>&1; then
+              echo "-> Starting headless Chromium on port 9222..."
+              rm -f /tmp/chrome-profile-stable/SingletonLock
+              chromium --headless --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 \
+                --disable-gpu --no-sandbox --disable-dev-shm-usage \
+                --user-data-dir=/tmp/chrome-profile-stable > /tmp/chromium-headless.log 2>&1 &
+            fi
+
+            # Steps 3-5 need Node.js from the project image (build_args.NODE_VERSION).
+            if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+              echo "-> Node.js not found in the image; skipping chrome-devtools-mcp install and MCP registration."
+              exit 0
+            fi
+
+            # 3. Install chrome-devtools-mcp globally (idempotent)
+            if ! npm list -g chrome-devtools-mcp >/dev/null 2>&1; then
+              echo "-> Installing chrome-devtools-mcp..."
+              sudo npm install -g chrome-devtools-mcp@latest
+            fi
+
+            # 4. Merge the server into Antigravity's and omp's configs without touching other entries
+            node -e '
+              const fs = require("fs"); const path = require("path");
+              const read = (p) => { try { const t = fs.readFileSync(p, "utf8").trim(); return t ? JSON.parse(t) : {}; } catch (e) { return {}; } };
+              const write = (p, o) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify(o, null, 2), "utf8"); };
+              const agyPath = process.env.HOME + "/.gemini/config/mcp_config.json";
+              const agy = read(agyPath); agy.mcpServers = agy.mcpServers || {};
+              agy.mcpServers["chrome-devtools"] = { command: "chrome-devtools-mcp", args: ["--browser-url=http://127.0.0.1:9222", "--no-usage-statistics"] };
+              write(agyPath, agy);
+              const ompPath = process.env.HOME + "/.omp/config.json";
+              const omp = read(ompPath); omp.browser = omp.browser || {};
+              omp.browser.cdpUrl = "http://127.0.0.1:9222"; omp.browser.executablePath = "/usr/bin/chromium";
+              omp.browser.args = ["--no-sandbox", "--disable-dev-shm-usage"];
+              write(ompPath, omp);
+            '
+
+            # 5. Register with Claude Code when installed (remove-then-add is idempotent)
+            if command -v claude >/dev/null 2>&1; then
+              claude mcp remove --scope user chrome-devtools >/dev/null 2>&1 || true
+              claude mcp add --scope user chrome-devtools -- chrome-devtools-mcp --browser-url=http://127.0.0.1:9222 --no-usage-statistics || true
+            fi
+          user: "1000"
+          env: [CHROME_DEVTOOLS_HOST_BROWSER]
+          description: Start Chromium and register the chrome-devtools MCP server
+
+  - type: com.docker.sandbox/agent-context@1
+    config:
+      content: |
+        A Chrome DevTools endpoint is available at http://127.0.0.1:9222 (headless Chromium in
+        the sandbox, or a Chrome on the host when agy-sandbox runs with --host-browser). The
+        chrome-devtools-mcp server is registered with the installed agents.

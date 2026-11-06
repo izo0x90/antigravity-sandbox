@@ -1,206 +1,179 @@
 """
-Kit resolution. A kit reference in agy.yaml is one of:
-  - a bundled kit name (a directory under kits/), which is also how agents are named
-  - a local directory holding spec.yaml / spec.yml
-  - a remote reference (git+..., https://..., oci://...)
+Kit references and bundled kit descriptors. Pure: reads files, never runs sbx.
 
-Login mode reaches kits through one mechanism: bundled kits that declare an
-`auth_mode` argument receive it as `--kit-arg <kit>.auth_mode=<mode>`, and a
-bundled `<kit>-proxy` kit (the static credential declaration sbx needs for
-proxy injection) is attached only in proxy-managed mode.
+A kit reference in agy.yaml is one of:
+  - a bundled kit name (a directory under kits/), which is also how agents are named
+  - a local directory holding a v3 descriptor <dirname>.yaml
+  - a remote reference (git+..., oci://..., docker.io/..., https://...)
+
+Login mode reaches kits by attachment, not by argument: a bundled kit named
+`<kit>-credentials` holds the proxy credential declarations for `<kit>` and is
+attached next to it only in proxy-managed mode.
 """
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import yaml
 
 from .agents import AGENT_SPECS
-from .constants import (
-    AUTH_MODE_KIT_ARG,
-    AUTH_MODE_PROXY_MANAGED,
-    PROJECT_KIT_NAME,
-    PROXY_KIT_SUFFIX,
-    REMOTE_KIT_SCHEMES,
-    STATE_DIR,
-)
+from .constants import CREDENTIALS_KIT_SUFFIX, KIT_SCHEMA_VERSION, REMOTE_KIT_SCHEMES
+from .errors import KitError
 
 KITS_DIR = Path(__file__).resolve().parent / "kits"
+VOLUME_CAPABILITY = "com.docker.sandbox/volume@1"
+CREDENTIAL_CAPABILITY = "com.docker.sandbox/credential@1"
+LIFECYCLE_CAPABILITY = "com.docker.sandbox/lifecycle@1"
+NETWORK_CAPABILITY = "com.docker.sandbox/network-policy@1"
 
 
-class _KitDumper(yaml.SafeDumper):
-    """Writes multi-line strings (hook scripts) as literal blocks so generated specs stay readable."""
+@dataclass(frozen=True)
+class KitRef:
+    """One kit as sbx will receive it."""
+    name: str          # basename, used for display and for finding `<name>-credentials`
+    source: str        # absolute directory for local kits, the reference itself for remote ones
+    bundled: bool = False
 
 
-def _str_presenter(dumper, data):
-    if "\n" in data:
-        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+@dataclass(frozen=True)
+class BundledKit:
+    name: str
+    display_name: str
+    description: str
+    path: Path
+    descriptor: dict
+
+    @property
+    def internal(self) -> bool:
+        """Credential kits are attached by the tool, never listed for users to add."""
+        return self.name.endswith(CREDENTIALS_KIT_SUFFIX)
+
+    def ref(self) -> KitRef:
+        return KitRef(name=self.name, source=str(self.path), bundled=True)
 
 
-_KitDumper.add_representer(str, _str_presenter)
-
-
-def _spec_path(kit_dir: Path) -> Optional[Path]:
-    for name in ("spec.yaml", "spec.yml"):
-        if (kit_dir / name).is_file():
-            return kit_dir / name
+def descriptor_path(kit_dir: Path) -> Optional[Path]:
+    """A v3 kit directory carries `<dirname>.yaml` (or .yml)."""
+    for suffix in (".yaml", ".yml"):
+        candidate = kit_dir / f"{kit_dir.name}{suffix}"
+        if candidate.is_file():
+            return candidate
     return None
 
 
-def _load_spec(kit_dir: Path) -> dict:
-    spec = _spec_path(kit_dir)
-    if not spec:
-        return {}
+def load_descriptor(kit_dir: Path) -> dict:
+    path = descriptor_path(kit_dir)
+    if not path:
+        raise KitError(f"'{kit_dir}' is not a kit directory: no {kit_dir.name}.yaml descriptor.")
     try:
-        with open(spec, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    except (OSError, yaml.YAMLError):
-        return {}
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError) as e:
+        raise KitError(f"Could not read kit descriptor {path}: {e}")
+    if not isinstance(data, dict):
+        raise KitError(f"Kit descriptor {path} must be a mapping.")
+    if str(data.get("schemaVersion")) != KIT_SCHEMA_VERSION:
+        raise KitError(f"Kit descriptor {path} must be schemaVersion \"{KIT_SCHEMA_VERSION}\".")
+    return data
 
 
-def bundled_kit_dir(name: str) -> Optional[Path]:
-    """The directory of a bundled kit by bare name; paths are never bundled names."""
-    if not name or "/" in name or os.sep in name:
-        return None
-    kit_dir = KITS_DIR / name
-    if kit_dir.is_dir() and _spec_path(kit_dir):
-        return kit_dir
-    return None
+def capabilities(descriptor: dict, type_name: str) -> List[dict]:
+    """Every capability entry of one type (group blocks are flattened)."""
+    found: List[dict] = []
+    for entry in descriptor.get("capabilities") or []:
+        if not isinstance(entry, dict):
+            continue
+        members = entry.get("group") if isinstance(entry.get("group"), list) else [entry]
+        for member in members:
+            if isinstance(member, dict) and member.get("type") == type_name:
+                found.append(member)
+    return found
 
 
-def list_bundled_kits() -> List[Dict[str, str]]:
-    """Name, display name, description and path of every kit shipped under kits/."""
-    kits = []
+def bundled_kits(include_internal: bool = False) -> Dict[str, BundledKit]:
+    """Every kit shipped under kits/, by name, in directory order."""
+    kits: Dict[str, BundledKit] = {}
     if not KITS_DIR.is_dir():
         return kits
     for kit_dir in sorted(KITS_DIR.iterdir()):
-        if not kit_dir.is_dir() or not _spec_path(kit_dir):
+        if not kit_dir.is_dir() or not descriptor_path(kit_dir):
             continue
-        data = _load_spec(kit_dir)
-        name = data.get("name") or kit_dir.name
-        kits.append({
-            "name": name,
-            "display_name": data.get("displayName") or name,
-            "description": data.get("description") or "",
-            "path": str(kit_dir),
-        })
+        descriptor = load_descriptor(kit_dir)
+        kit = BundledKit(
+            name=kit_dir.name,
+            display_name=str(descriptor.get("displayName") or kit_dir.name),
+            description=str(descriptor.get("description") or ""),
+            path=kit_dir,
+            descriptor=descriptor,
+        )
+        if kit.internal and not include_internal:
+            continue
+        kits[kit.name] = kit
     return kits
 
 
-def kit_volume_paths(kit_refs: Sequence[str]) -> List[str]:
-    """
-    Mount paths of the volumes declared by local kits (bundled or directories). sbx keeps
-    these outside the container filesystem, so an upgrade carries them separately.
-    Remote kits cannot be read; their volumes are reported by name only.
-    """
-    paths: List[str] = []
-    for ref in kit_refs:
-        if ref.startswith(REMOTE_KIT_SCHEMES) or not os.path.isdir(ref):
-            continue
-        for volume in _load_spec(Path(ref)).get("volumes") or []:
-            path = volume.get("path") if isinstance(volume, dict) else None
-            if path and path not in paths:
-                paths.append(str(path))
-    return paths
+def bundled_kit(name: str) -> Optional[BundledKit]:
+    """A bundled kit by bare name; paths are never bundled names."""
+    if not name or "/" in name or os.sep in name:
+        return None
+    kit_dir = KITS_DIR / name
+    if not kit_dir.is_dir() or not descriptor_path(kit_dir):
+        return None
+    return bundled_kits(include_internal=True).get(name)
 
 
-def kit_declares_arg(kit_dir: Path, arg: str) -> bool:
-    args = _load_spec(kit_dir).get("args")
-    return isinstance(args, dict) and arg in args
+def _remote_name(ref: str) -> str:
+    """git+https://x/kits.git#dir=foo -> foo; docker.io/sbx/playwright:1.0 -> playwright."""
+    if "#dir=" in ref:
+        return ref.split("#dir=", 1)[1].split("&", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    tail = ref.rstrip("/").rsplit("/", 1)[-1]
+    tail = tail.split("@", 1)[0].split(":", 1)[0]
+    return tail[:-4] if tail.endswith(".git") else tail
 
 
-def resolve_kit(ref: str) -> str:
-    """Resolves one kit reference to what `sbx run --kit` accepts. Raises ValueError when it cannot."""
+def resolve(ref: str) -> KitRef:
+    """Resolves one agy.yaml kit reference. Raises KitError when it cannot."""
     if not ref or ref == ".":
-        raise ValueError("Empty kit reference")
-    bundled = bundled_kit_dir(ref)
+        raise KitError("Empty kit reference.")
+    bundled = bundled_kit(ref)
     if bundled:
-        return str(bundled)
+        return bundled.ref()
     if ref in AGENT_SPECS:
-        raise ValueError(f"Agent '{ref}' has no kit directory under {KITS_DIR}")
+        raise KitError(f"Agent '{ref}' has no kit directory under {KITS_DIR}.")
     if ref.startswith(REMOTE_KIT_SCHEMES):
-        return ref
+        return KitRef(name=_remote_name(ref), source=ref)
     if os.path.isdir(ref):
-        if not _spec_path(Path(ref)):
-            raise ValueError(f"Local kit directory '{ref}' is missing spec.yaml or spec.yml")
-        return str(Path(ref).resolve())
-    raise ValueError(
-        f"Kit '{ref}' could not be resolved as a bundled kit, agent, local directory or remote reference"
+        path = Path(ref).resolve()
+        load_descriptor(path)
+        return KitRef(name=path.name, source=str(path))
+    names = ", ".join(bundled_kits())
+    raise KitError(
+        f"Kit '{ref}' is not a bundled kit, a local kit directory or a remote reference.",
+        hint=f"Bundled kits: {names}",
     )
 
 
-def run_kits(config, extra_kits: Sequence[str] = ()) -> List[str]:
-    """
-    Every kit to pass to `sbx run`, in order: the primary agent's kit, the configured
-    kits, their proxy overlays when proxy-managed, the generated project kit, extras.
-    """
-    resolved: List[str] = []
-
-    def add(ref: str) -> None:
-        if ref and ref not in resolved:
-            resolved.append(ref)
-
-    for ref in config.all_kits():
-        if ref in AGENT_SPECS and not AGENT_SPECS[ref].has_kit:
-            continue
-        add(resolve_kit(ref))
-    if config.auth_mode == AUTH_MODE_PROXY_MANAGED:
-        for path in list(resolved):
-            overlay = bundled_kit_dir(Path(path).name + PROXY_KIT_SUFFIX) if path.startswith(str(KITS_DIR)) else None
-            if overlay:
-                add(str(overlay))
-    project_kit = write_project_kit(config)
-    if project_kit:
-        add(project_kit)
-    for ref in extra_kits:
-        add(resolve_kit(ref))
-    return resolved
-
-
-def kit_args(config, kits: Sequence[str]) -> List[str]:
-    """`--kit-arg` values: auth_mode for every bundled kit that declares it, then agy.yaml's kit_args."""
-    args: List[str] = []
-    for path in kits:
-        kit_dir = Path(path)
-        if path.startswith(str(KITS_DIR)) and kit_declares_arg(kit_dir, AUTH_MODE_KIT_ARG):
-            args.append(f"{kit_dir.name}.{AUTH_MODE_KIT_ARG}={config.auth_mode}")
-    for key, value in config.kit_args.items():
-        args.append(f"{key}={value}")
-    return args
-
-
-def project_kit_dir(sandbox_name: str) -> Path:
-    return Path(STATE_DIR).expanduser() / "kits" / sandbox_name
-
-
-def write_project_kit(config) -> Optional[str]:
-    """
-    Turns agy.yaml's setup_scripts into a mixin kit whose install hook runs them once,
-    inside the VM, in the workspace, when the sandbox is created. Returns its path, or
-    None when there is nothing to run.
-    """
-    if not config.setup_scripts:
+def credentials_kit(kit: KitRef) -> Optional[KitRef]:
+    """The bundled `<name>-credentials` kit for a bundled kit, when one exists."""
+    if not kit.bundled:
         return None
-    kit_dir = project_kit_dir(config.sandbox_name)
-    kit_dir.mkdir(parents=True, exist_ok=True)
-    script = "set -e\ncd \"${WORKSPACE_DIR:-$HOME}\"\n" + "\n".join(config.setup_scripts) + "\n"
-    spec = {
-        "schemaVersion": "2",
-        "kind": "mixin",
-        "name": PROJECT_KIT_NAME,
-        "displayName": "Project setup scripts",
-        "description": f"setup_scripts from agy.yaml for {config.sandbox_name}, run once when the sandbox is created",
-        "setup": {
-            "install": [
-                {
-                    "command": script,
-                    "user": "agent",
-                    "description": "Run agy.yaml setup_scripts in the workspace",
-                }
-            ]
-        },
-    }
-    with open(kit_dir / "spec.yaml", "w", encoding="utf-8") as f:
-        yaml.dump(spec, f, Dumper=_KitDumper, sort_keys=False)
-    return str(kit_dir)
+    sibling = bundled_kit(kit.name + CREDENTIALS_KIT_SUFFIX)
+    return sibling.ref() if sibling else None
+
+
+def volume_paths(refs: Sequence[KitRef]) -> List[str]:
+    """
+    Mount paths of the volumes declared by local kits. sbx keeps these outside the
+    container filesystem, so a recreate carries them separately. Remote kits cannot
+    be read here.
+    """
+    paths: List[str] = []
+    for ref in refs:
+        if ref.source.startswith(REMOTE_KIT_SCHEMES) or not os.path.isdir(ref.source):
+            continue
+        for entry in capabilities(load_descriptor(Path(ref.source)), VOLUME_CAPABILITY):
+            path = (entry.get("config") or {}).get("path")
+            if path and path not in paths:
+                paths.append(str(path))
+    return paths

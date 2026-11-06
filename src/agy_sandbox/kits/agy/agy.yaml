@@ -1,0 +1,128 @@
+# syntax=docker/sandbox-kit:3
+# Google Antigravity (agy) for agy-sandbox. The binary overlay is Docker's
+# published antigravity mixin (see agy.dockerfile); this descriptor replaces
+# Docker's so that:
+#   - no credential is declared here: sign-in happens inside the sandbox by
+#     default, and the agy-credentials kit is attached for proxy-managed logins
+#   - GCP / Gemini Enterprise logins work (license and Vertex hosts allowed)
+#   - agy uses its copy/paste OAuth flow instead of opening a browser
+schemaVersion: "3"
+kind: mixin
+displayName: Google Antigravity
+description: Google's agy CLI with sandbox-local Google sign-in by default (GCP and Gemini Enterprise supported). Proxy-managed credentials come from the agy-credentials kit.
+version: "1.0.0"
+provides: ["antigravity"]
+requires: ["deb/jq"]
+
+args:
+  SSH_CONNECTION:
+    default: "sandbox 0 sandbox 0"
+    description: Makes agy use its copy/paste OAuth flow instead of opening a browser
+    env: SSH_CONNECTION
+
+capabilities:
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          # Google sign-in and account hosts
+          - accounts.google.com
+          - oauth2.googleapis.com
+          - www.googleapis.com
+          - lh3.googleusercontent.com
+          # Model and platform backends
+          - aicode.googleapis.com
+          - cloudcode-pa.googleapis.com
+          - daily-cloudcode-pa.googleapis.com
+          - generativelanguage.googleapis.com
+          - cloudaicompanion.googleapis.com
+          # License / tier lookup for GCP and Gemini Enterprise logins, and Vertex-backed models
+          - businessaicode.googleapis.com
+          - aiplatform.googleapis.com
+          # Antigravity's own product hosts and feature flags
+          - antigravity.google
+          - antigravity.google.com
+          - antigravity-unleash.goog
+          - play.googleapis.com
+          - safebrowsing.googleapis.com
+          - www.gstatic.com
+          # Self-updater and the bucket it pulls bundles from
+          - antigravity-cli-auto-updater-974169037036.us-central1.run.app
+          - storage.googleapis.com
+          - raw.githubusercontent.com
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        # Permissive settings for sandboxed operation, written only when missing so a
+        # login or settings change made inside the sandbox is never overwritten.
+        - command: |
+            set -eu
+            settings_dir="$HOME/.gemini/antigravity-cli"
+            settings="$settings_dir/settings.json"
+            mkdir -p "$settings_dir"
+            [ ! -e "$settings" ] || exit 0
+            ws="${WORKSPACE_DIR:-/}"
+            esc=$(printf '%s' "$ws" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            printf '%s\n' "{
+              \"agentMode\": \"accept-edits\",
+              \"artifactReviewMode\": \"always-proceed\",
+              \"fileAccessPolicy\": \"allow\",
+              \"internetAccessPolicy\": \"allow\",
+              \"nonWorkspaceFileAccess\": \"allow\",
+              \"permissions\": { \"allow\": [\"command(*)\", \"execute_url(*)\", \"mcp(*)\", \"read_file(*)\", \"read_url(*)\", \"write_file(*)\"] },
+              \"toolExecutionPolicy\": \"always-proceed\",
+              \"trustedWorkspaces\": [\"$esc\"]
+            }" > "$settings"
+            chmod 0600 "$settings"
+          user: agent
+          env: [WORKSPACE_DIR]
+          description: Seed permissive Antigravity settings (only when missing)
+        # A token file holding proxy sentinels (left by a sandbox that ran proxy-managed)
+        # would be sent to Google as-is and fail. Drop it when no proxy credential is attached.
+        - command: |
+            set -eu
+            [ "${SBX_CRED_ANTIGRAVITY_MODE:-none}" = none ] || exit 0
+            token="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+            [ -f "$token" ] || exit 0
+            if grep -q proxy-managed "$token"; then rm -f "$token"; fi
+          user: agent
+          env: [SBX_CRED_ANTIGRAVITY_MODE]
+          description: Drop a stale proxy-managed token when no proxy credential is attached
+      startup:
+        # Both hooks are whole-file-converging rewrites, which is what makes them safe on every boot.
+        - command: |
+            set -e
+            cfg="$HOME/.gemini/antigravity-cli/settings.json"
+            mkdir -p "$(dirname "$cfg")"
+            [ -s "$cfg" ] || echo '{}' > "$cfg"
+            if [ "${SBX_CRED_GOOGLE_MODE:-none}" = apikey ]; then
+              jq '.modelProvider = "gemini"' "$cfg" > "$cfg.tmp"
+            else
+              jq 'del(.modelProvider)' "$cfg" > "$cfg.tmp"
+            fi
+            mv "$cfg.tmp" "$cfg"
+          user: "1000"
+          env: [SBX_CRED_GOOGLE_MODE]
+          description: Select Gemini API-key mode only when a Google credential is attached
+        - command: |
+            set -e
+            [ -n "$MCP_GATEWAY_URL" ] || exit 0
+            cfg="$HOME/.gemini/config/mcp_config.json"
+            mkdir -p "$(dirname "$cfg")"
+            [ -s "$cfg" ] || echo '{}' > "$cfg"
+            frag=$(mktemp)
+            printf '{"mcpServers":{"mcp-gateway":{"serverUrl":"%s","headers":{"Authorization":"Bearer %s"}}}}' "$MCP_GATEWAY_URL" "$MCP_SENTINEL_TOKEN_NAME" > "$frag"
+            jq -s '.[0] * .[1]' "$cfg" "$frag" > "$cfg.tmp"
+            mv "$cfg.tmp" "$cfg"
+            rm -f "$frag"
+          user: "1000"
+          env: [MCP_GATEWAY_URL, MCP_SENTINEL_TOKEN_NAME]
+          description: Register the sandbox MCP gateway in Antigravity's user configuration
+
+  - type: com.docker.sandbox/agent-context@1
+    config:
+      content: |
+        Google Antigravity (`agy`) is installed. Sign in by running `agy` inside this sandbox;
+        consumer, GCP and Gemini Enterprise accounts are supported. Settings live in
+        ~/.gemini/antigravity-cli and MCP servers in ~/.gemini/config/mcp_config.json.

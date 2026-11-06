@@ -1,8 +1,0 @@
-ARG BASE_IMAGE=agy-base:latest
-FROM ${BASE_IMAGE}
-
-ARG TARGETARCH
-
-RUN OMP_ARCH=$(if [ "$TARGETARCH" = "arm64" ]; then echo "arm64"; else echo "x64"; fi) && \
-    curl -fsSL "https://github.com/can1357/oh-my-pi/releases/download/v17.2.8/omp-linux-${OMP_ARCH}" -o /usr/local/bin/omp && \
-    chmod +x /usr/local/bin/omp

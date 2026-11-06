@@ -1,0 +1,36 @@
+# syntax=docker/sandbox-kit:3
+# Lets agents drive a Chrome on the host. `agy-sandbox up --host-browser` starts the
+# host Chrome with remote debugging and attaches this kit; the relay below makes it
+# reachable at 127.0.0.1:9222 inside the sandbox, the same address the in-sandbox
+# Chromium of the chrome-devtools kit would use.
+schemaVersion: "3"
+kind: mixin
+displayName: Host Chrome Browser
+description: Relays 127.0.0.1:9222 in the sandbox to a Chrome on the host started by `agy-sandbox up --host-browser`.
+version: "1.0.0"
+
+args:
+  host_port:
+    default: "9222"
+    pattern: '^[0-9]{1,5}$'
+    description: Remote debugging port of the Chrome running on the host
+  CHROME_DEVTOOLS_HOST_BROWSER:
+    default: "1"
+    description: Read by the chrome-devtools kit to skip its in-sandbox Chromium
+    env: CHROME_DEVTOOLS_HOST_BROWSER
+
+capabilities:
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        # The sandbox proxy presents the host as localhost
+        allow: ["localhost:${{ kit.args.host_port }}"]
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      startup:
+        - command: [python3, /home/agent/.local/share/agy-sandbox/chrome_host_relay.py, --host-port, "${{ kit.args.host_port }}"]
+          user: "1000"
+          background: true
+          env: [HTTP_PROXY, http_proxy]
+          description: Relay 127.0.0.1:9222 to the host Chrome through the sandbox proxy

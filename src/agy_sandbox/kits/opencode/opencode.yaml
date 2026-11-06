@@ -1,0 +1,106 @@
+# syntax=docker/sandbox-kit:3
+# OpenCode for agy-sandbox. The binary overlay is Docker's published opencode mixin
+# (see opencode.dockerfile); this descriptor declares no credential. `opencode auth
+# login` inside the sandbox holds credentials by default; the opencode-credentials
+# kit is attached for proxy-managed logins.
+schemaVersion: "3"
+kind: mixin
+displayName: OpenCode
+description: OpenCode, the open-source terminal coding agent, with sandbox-local sign-in by default. Proxy-managed credentials come from the opencode-credentials kit.
+version: "1.0.0"
+provides: ["opencode"]
+requires: ["deb/jq", "deb/util-linux"]
+
+capabilities:
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - api.anthropic.com
+          - claude.ai
+          - console.anthropic.com
+          - api.business.githubcopilot.com
+          - api.enterprise.githubcopilot.com
+          - api.github.com
+          - api.githubcopilot.com
+          - api.individual.githubcopilot.com
+          - copilot.github.com
+          - github.com
+          - raw.githubusercontent.com
+          - aiplatform.googleapis.com
+          - generativelanguage.googleapis.com
+          - oauth2.googleapis.com
+          - vertexai.googleapis.com
+          - api.groq.com
+          - api.openai.com
+          - openai.com
+          - openrouter.ai
+          - api.x.ai
+          - auth.openai.com
+          - chatgpt.com
+          - "*.githubusercontent.com"
+          - codeload.github.com
+          - registry.npmjs.org
+          - opencode.ai
+          - "*.opencode.ai"
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      startup:
+        - command: |
+            set -e
+            [ -n "$MCP_GATEWAY_URL" ] || exit 0
+            mkdir -p "$HOME/.config/opencode"
+            cat > "$HOME/.config/opencode/opencode.json" <<EOF
+            {
+              "\$schema": "https://opencode.ai/config.json",
+              "mcp": {
+                "mcp-gateway": {
+                  "type": "remote",
+                  "url": "$MCP_GATEWAY_URL",
+                  "enabled": true,
+                  "headers": { "Authorization": "Bearer $MCP_SENTINEL_TOKEN_NAME" }
+                }
+              }
+            }
+            EOF
+          user: agent
+          env: [MCP_GATEWAY_URL, MCP_SENTINEL_TOKEN_NAME]
+          description: Register the sandbox MCP gateway in ~/.config/opencode/opencode.json
+        # Seeds the GitHub Copilot provider from the GH_TOKEN sentinel when a GitHub
+        # credential is attached (proxy-managed only); no-op otherwise.
+        - command: |
+            set -e
+            umask 077
+            [ -n "${GH_TOKEN:-}" ] || exit 0
+            [ "${SBX_CRED_GITHUB_MODE:-none}" != none ] || exit 0
+            auth="$HOME/.local/share/opencode/auth.json"
+            mkdir -p "$(dirname "$auth")"
+            exec 9>>"$(dirname "$auth")/.copilot-seed.lock"
+            flock 9
+            if [ -e "$auth" ] && [ ! -f "$auth" ]; then
+              echo "auth.json is not a regular file; leaving the GitHub Copilot provider unseeded" >&2
+              exit 0
+            fi
+            if ! merged=$({ if [ -s "$auth" ]; then cat "$auth"; else echo '{}'; fi; } | jq -s --arg token "$GH_TOKEN" '
+                if length != 1 or (.[0] | type) != "object" then error("auth.json must hold exactly one JSON object")
+                elif (.[0]."github-copilot" | type == "object" and .type == "oauth" and .refresh == $token
+                      and (.access | type) == "string" and (.expires | type == "number" and . >= 0 and . == floor)) then empty
+                else .[0] | ."github-copilot" = {type: "oauth", refresh: $token, access: $token, expires: 0} end'); then
+              echo "auth.json is not a single JSON object; leaving the GitHub Copilot provider unseeded" >&2
+              exit 0
+            fi
+            [ -n "$merged" ] || exit 0
+            tmp=$(mktemp "$(dirname "$auth")/auth.json.XXXXXX")
+            trap 'rm -f "$tmp"' EXIT
+            printf '%s\n' "$merged" > "$tmp"
+            mv -f "$tmp" "$auth"
+          user: agent
+          env: [GH_TOKEN, SBX_CRED_GITHUB_MODE]
+          description: Seed OpenCode's GitHub Copilot provider from the GH_TOKEN sentinel
+
+  - type: com.docker.sandbox/agent-context@1
+    config:
+      content: |
+        OpenCode is installed. Run `opencode` in the workspace; sign in with `opencode auth login`.
+        Configuration lives in ~/.config/opencode/opencode.json.

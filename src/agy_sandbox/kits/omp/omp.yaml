@@ -1,0 +1,26 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+kind: mixin
+displayName: Oh My Pi (omp)
+description: The oh-my-pi terminal AI coding agent and tool harness.
+version: "1.0.0"
+provides: ["omp"]
+
+capabilities:
+  # omp talks to whichever model provider the user configures; no fixed host list.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow: ["*"]
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      startup:
+        - command: mkdir -p "$HOME/.omp"
+          user: "1000"
+          description: Initialize the omp configuration directory
+
+  - type: com.docker.sandbox/agent-context@1
+    config:
+      content: |
+        Oh My Pi (`omp`) is installed at /usr/local/bin/omp. Configuration lives in ~/.omp.

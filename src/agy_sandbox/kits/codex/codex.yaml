@@ -1,0 +1,107 @@
+# syntax=docker/sandbox-kit:3
+# OpenAI Codex CLI for agy-sandbox. The binary overlay is Docker's published codex
+# mixin (see codex.dockerfile); this descriptor declares no credential. Codex logs
+# in inside the sandbox by default; the codex-credentials kit is attached for
+# proxy-managed logins, and the install hook then sees SBX_CRED_OPENAI_MODE != none.
+schemaVersion: "3"
+kind: mixin
+displayName: Codex
+description: OpenAI Codex CLI with sandbox-local sign-in by default. Proxy-managed credentials come from the codex-credentials kit.
+version: "1.0.0"
+provides: ["codex"]
+
+args:
+  BROWSER:
+    default: xdg-open
+    env: BROWSER
+  CODEX_HOME:
+    default: /home/agent/.codex
+    env: CODEX_HOME
+  GIT_TERMINAL_PROMPT:
+    default: "0"
+    env: GIT_TERMINAL_PROMPT
+
+capabilities:
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - api.openai.com
+          - openai.com
+          - auth.openai.com            # OAuth token endpoint
+          - chatgpt.com                # where the OAuth access token is spent
+          - files.openai.com
+          - "*.chatgpt.com"
+          - "*.oaiusercontent.com"
+          - registry.npmjs.org         # `codex plugin add`
+          - releases.openai.com        # `codex update`
+          - api.github.com
+          - github.com
+          - release-assets.githubusercontent.com
+          - codeload.github.com
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        # Seed config.toml and auth.json from the surfaced credential mode. Without a
+        # proxy credential Codex prompts for its own login inside the sandbox.
+        - command: |
+            set -e
+            mkdir -p /home/agent/.codex /home/agent/.agents
+            MODE="${SBX_CRED_OPENAI_MODE:-none}"
+            cat > /home/agent/.codex/config.toml << 'EOF'
+            approval_policy = "never"
+            sandbox_mode = "danger-full-access"
+            mcp_oauth_credentials_store = "file"
+            EOF
+            case "$MODE" in
+              oauth|apikey)
+                cat >> /home/agent/.codex/config.toml << 'EOF'
+            forced_login_method = "api"
+            EOF
+                ;;
+            esac
+            if [ "$MODE" = oauth ]; then
+              cat >> /home/agent/.codex/config.toml << 'EOF'
+            model_provider = "sandboxd"
+            [model_providers.sandboxd]
+            name = "Sandbox Proxy"
+            base_url = "https://chatgpt.com/backend-api/codex"
+            experimental_bearer_token = "oai-oat01-proxy-managed"
+            requires_openai_auth = false
+            EOF
+            fi
+            case "$MODE" in
+              oauth|apikey)
+                printf '{ "OPENAI_API_KEY": "proxy-managed" }\n' > /home/agent/.codex/auth.json
+                ;;
+              *)
+                rm -f /home/agent/.codex/auth.json
+                ;;
+            esac
+          user: agent
+          env: [SBX_CRED_OPENAI_MODE]
+          description: Seed Codex config/auth from SBX_CRED_OPENAI_MODE
+      startup:
+        - command: |
+            set -e
+            [ -n "$MCP_GATEWAY_URL" ] || exit 0
+            mkdir -p "$HOME/.codex"
+            cfg="$HOME/.codex/config.toml"
+            touch "$cfg"
+            grep -q "^\[mcp_servers.mcp-gateway\]" "$cfg" && exit 0
+            cat >> "$cfg" <<EOF
+            [mcp_servers.mcp-gateway]
+            url = "$MCP_GATEWAY_URL"
+            [mcp_servers.mcp-gateway.http_headers]
+            Authorization = "Bearer $MCP_SENTINEL_TOKEN_NAME"
+            EOF
+          user: agent
+          env: [MCP_GATEWAY_URL, MCP_SENTINEL_TOKEN_NAME]
+          description: Register the sandbox MCP gateway in ~/.codex/config.toml
+
+  - type: com.docker.sandbox/agent-context@1
+    config:
+      content: |
+        Codex CLI is installed. Run `codex` for an interactive session or `codex exec "<prompt>"`
+        for a one-shot run. Configuration lives in ~/.codex/config.toml.
