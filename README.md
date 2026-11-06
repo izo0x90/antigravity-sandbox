@@ -9,26 +9,32 @@
 # agy-sandbox
 
 The quickest way to spin up sandboxed development environments for terminal AI coding agents on
-Docker Sandboxes (`sbx`), with your toolchains and agent harnesses pre-installed.
+Docker Sandboxes (`sbx`), with your project's toolchain and one or more agents pre-installed.
 
-`agy-sandbox` builds a custom Docker image for your project, loads it into `sbx` as a template, and
-runs it as an isolated microVM with one or more agent harnesses installed side by side:
+`agy-sandbox` turns one `agy.yaml` into a native `sbx` composition: a generated **workload kit**
+built from your `Dockerfile.agy` (or the packaged default) and one **mixin kit** per agent, all in
+the v3 kit format `sbx` builds and runs itself.
 
-- **Custom images in sandboxes**: `Dockerfile.agy` (or the default) with any native dependencies,
-  runtimes and system packages, run inside an `sbx` microVM.
+- **Project images without a pipeline**: `Dockerfile.agy` plus `build_args` become a v3 workload
+  kit on `docker.io/sbx/shell-image`; `sbx` builds it when the sandbox is created. No `docker build`,
+  no `docker save`, no template store.
 - **Every agent, the same way**: Google Antigravity, Claude Code, OpenCode, Codex, Oh My Pi and
-  Prime Agent are each a stacked image layer plus a bundled kit on `sbx`'s shell sandbox. Install
-  one or five; they all launch identically.
-- **One login switch**: `auth_mode: sandbox-local` (log in inside the sandbox) or
-  `auth_mode: proxy-managed` (credentials stay on the host in `sbx secret`, the sandbox proxy
-  injects them).
-- **Ports, host browser, guardian**: publish sandbox ports to the host, let agents drive a Chrome
-  on your machine, and get warned before destroying a sandbox with unsaved work or live logins.
+  Prime Agent are each a bundled v3 mixin that carries its own binary. Install one or five.
+- **One login switch**: `auth_mode: sandbox-local` (log in inside the sandbox; nothing is
+  intercepted) or `auth_mode: proxy-managed` (credentials stay on the host in `sbx secret`; a
+  bundled `<agent>-credentials` kit lets the sandbox proxy inject them).
+- **Upgrade without losing anything**: `upgrade` adds kits, env and ports to a running sandbox in
+  place; `recreate` rebuilds it from a snapshot of itself for the changes `sbx` cannot apply in place.
+- **Ports, host browser, guardian**: publish sandbox ports, let agents drive a Chrome on your
+  machine, and get warned before destroying a sandbox with unsaved work or live logins.
 
 ## Prerequisites
 
-- **Docker Desktop** with Docker Sandboxes (`sbx`) enabled and `sandboxd` running.
+- **Docker Sandboxes CLI** `sbx` 0.50 or newer with its daemon running (`brew install docker/tap/sbx`).
+  `upgrade` needs 0.48 or newer; everything else works on any `sbx` with v3 kit support (0.45+).
 - **uv** for installing the CLI.
+- Docker on the host is needed only if `sbx` on your machine builds local kits with the host
+  engine; current releases build them in their own builder sandbox.
 
 ## Installation
 
@@ -42,11 +48,14 @@ uv tool install -e .
 # Inspect the project read-only and write agy.yaml (falls back to an offline manifest scan)
 agy-sandbox auto-init --agent claude,opencode
 
-# Build the image, load it into sbx, create the sandbox and attach
+# Build the workload, create the sandbox and attach
 agy-sandbox up
 
 # Later: resume, publishing a port and using a Chrome on the host
 agy-sandbox up -p 3000:3000 --host-browser
+
+# Added a kit or an agent to agy.yaml? Apply it without touching what is inside
+agy-sandbox upgrade
 
 # Stop and remove (the guardian checks for unsaved work first)
 agy-sandbox down
@@ -58,7 +67,7 @@ agy-sandbox down
 profile: default
 project_name: my_app
 agent: claude                  # primary agent; its kit is always attached
-kits:                          # agent kits and mixin kits (bundled names, local dirs or git+/oci refs)
+kits:                          # agent kits and mixin kits (bundled names, local kit dirs, git+/oci/docker.io refs)
   - claude
   - opencode
   - chrome-devtools
@@ -70,9 +79,10 @@ host_browser:                  # optional; `up --host-browser` turns it on for o
   enabled: false
   port: 9222
   headless: false
-kit_args:                      # optional; passed through to `sbx run --kit-arg`
-  agy-proxy.auth_method: gcp
-build_args:
+kit_args:                      # optional; passed through as `--kit-arg`
+  agy-credentials.auth_method: gcp
+base_image: docker.io/sbx/shell-image:latest   # optional; the workload's FROM
+build_args:                    # ARGs of Dockerfile.agy / the default Dockerfile
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "20"
 setup_scripts:                 # run once inside the VM when the sandbox is created
@@ -81,54 +91,47 @@ env:                           # applied to every session
   - ENVIRONMENT=development
 ```
 
-`env` values are passed to `sbx run -e`, so changing them takes effect on the next `up` without a
-rebuild. `setup_scripts` become a generated mixin kit whose install hook runs them in the workspace
-when the sandbox is created, so changing them needs `up --rebuild`.
+`env` is passed to every session, so changing it takes effect on the next `up`. `build_args` and
+`setup_scripts` are part of the generated workload kit, so changing them needs `up --rebuild` (or
+`recreate`, which keeps the sandbox's contents but not a new image).
 
-### Upgrading a pre-0.5 `agy.yaml`
+Files from 0.5 need no changes. Pre-0.5 files (with an `sbx:` block, `use_native_login`,
+`workspace_path`, `sbx_persistent`/`sbx_proxy`) still load; every command prints what changed and
+`agy-sandbox config migrate` rewrites them.
 
-Older files nested most settings under `sbx:` and carried `use_native_login`, `workspace_path` and
-`auth_mode: sbx_persistent | sbx_proxy`. They still load; every command prints a warning naming what
-changed, and this rewrites the file in the current layout:
+## How a sandbox is composed
 
-```bash
-agy-sandbox config migrate
+```
+agy.yaml ──> ~/.agy-sandbox/kits/<sandbox>/workload/      the generated v3 workload kit
+             (workload.yaml + workload.dockerfile)        FROM base_image + your Dockerfile.agy
+         ──> sbx create --name <sandbox> [--clone] (-e ..)* (-p ..)* (--kit <mixin>)* <workload> <workspace>
+         ──> ~/.agy-sandbox/sandboxes/<sandbox>/plan.json  what the sandbox was built with
 ```
 
-| Before (0.4)                   | Now (0.5)                                          |
-| :----------------------------- | :------------------------------------------------- |
-| `sbx.enabled: true/false`      | gone; `sbx` is the only runtime                    |
-| `sbx.agent`, `sbx.kits`, `sbx.clone`, `sbx.ports`, `sbx.host_browser` | top-level `agent`, `kits`, `clone`, `ports`, `host_browser` |
-| `use_native_login`             | gone; see `auth_mode`                              |
-| `auth_mode: sbx_persistent`    | `auth_mode: sandbox-local`                         |
-| `auth_mode: sbx_proxy`         | `auth_mode: proxy-managed`                         |
-| `workspace_path`               | gone; `sbx` mounts the workspace at its host path  |
-| `init --sbx`, `auto-init --sbx` | gone                                              |
+The mixins, in order: the primary agent's kit, every kit in `kits`, each followed by its
+`<kit>-credentials` kit when `auth_mode` is `proxy-managed`, then `chrome-host` when the host browser
+is on. The saved plan is how later runs know what changed (see Upgrading).
 
 ## Login modes
 
-Both modes use the same mechanism for every agent: the wrapper passes `auth_mode` to each bundled
-agent kit as a kit argument, and the kit's setup hook does the right thing for its agent.
-
 **`sandbox-local`** (default). You log in inside the sandbox (`agy`, `claude /login`, `codex`,
-`opencode auth login`), exactly as on a normal machine. The real token lives in the sandbox and
-nothing intercepts it. GCP / Gemini Enterprise logins for Antigravity work because the kit's network
-policy includes the license host. Kits never write `proxy-managed` placeholders in this mode, even
-if you have global `sbx` secrets stored.
+`opencode auth login`), exactly as on a normal machine. No kit declares a credential, so nothing is
+intercepted and no `*_API_KEY` placeholder exists. GCP / Gemini Enterprise logins for Antigravity
+work because the kit's network policy includes the license and Vertex hosts.
 
 **`proxy-managed`**. Credentials live on the host in `sbx secret`; the sandbox only ever sees a
-placeholder that the `sbx` proxy swaps for the real value on outbound requests. For Claude, Codex
-and OpenCode this is `sbx`'s built-in credential proxy. For Antigravity, whose Google OAuth is not a
-built-in `sbx` service, the wrapper attaches the bundled `agy-proxy` kit, which declares that
-credential. `up` tells you which secrets are missing:
+placeholder that the `sbx` proxy swaps for the real value on outbound requests. The wrapper attaches
+the bundled `<agent>-credentials` kit next to each agent kit; they are declaration-only and vendored
+from Docker's own kits. `up` tells you which secrets are missing:
 
 ```bash
 sbx secret set anthropic --sandbox agy-sandbox-my-app
-sbx secret set google --sandbox agy-sandbox-my-app
+sbx secret set antigravity --sandbox agy-sandbox-my-app   # Antigravity's Google OAuth session
 ```
 
-The rule is generic: when `auth_mode` is `proxy-managed` and a bundled kit named `<kit>-proxy`
-exists, it is attached next to `<kit>`.
+`sbx` allows one owner per credential service in a sandbox, so two agents that both own a provider
+(Claude Code and OpenCode both own `anthropic`) cannot share a proxy-managed sandbox; `agy-sandbox`
+says so before creating anything. Use `sandbox-local` for that combination.
 
 ## CLI reference
 
@@ -138,11 +141,14 @@ exists, it is attached next to `<kit>`.
   Runs a host agent in read-only mode to infer `build_args`, `setup_scripts`, `env` and kits, falling
   back to an offline manifest scanner. Flags you pass win over what the analyzer inferred.
 - `agy-sandbox up [--rebuild] [--host-browser] [-p HOST:SANDBOX]`
-  Builds the image if needed, loads it into `sbx`, creates or resumes the sandbox and attaches.
-  Ports are published on creation and reconciled with `sbx ports` on resume.
+  Writes the workload kit, creates the sandbox (sbx builds the image) or resumes it, and attaches.
+  On resume it reports how `agy.yaml` differs from the sandbox and which command applies it.
 - `agy-sandbox upgrade [--host-browser] [-p HOST:SANDBOX]`
-  Applies `agy.yaml` changes to the existing sandbox without losing anything inside it. See
-  [Upgrading a sandbox](#upgrading-a-sandbox-without-losing-its-contents).
+  Applies additions in place: new kits or agents (`sbx kit add`, binaries included), env, ports, the
+  host browser. Refuses anything else and names the command to use.
+- `agy-sandbox recreate [--host-browser] [-p HOST:SANDBOX]`
+  Rebuilds the sandbox from a snapshot of its own filesystem, carrying kit volumes and the clone
+  workspace across, for removed kits, changed kit arguments and a changed login mode.
 - `agy-sandbox down`
   Removes the sandbox after the guardian check, and stops a host browser it started.
 - `agy-sandbox agents list` / `agy-sandbox kits list`
@@ -150,80 +156,73 @@ exists, it is attached next to `<kit>`.
   The same operation: an agent is a kit named after it. Adding `shell` only sets the primary agent.
 - `agy-sandbox config migrate`
   Rewrites a pre-0.5 `agy.yaml` in the current layout.
-- `agy-sandbox update-base`
-  Rebuilds `agy-base:latest` from scratch, plus the current project's agent layers, so new CLI
-  releases are picked up.
 
 ## Agent harnesses
 
-| Identifier    | Display name            | Image layer           | Kit             | Proxy services (proxy-managed)            |
-| :------------ | :---------------------- | :-------------------- | :-------------- | :---------------------------------------- |
-| `agy`         | Google Antigravity      | `Dockerfile.agy`      | `agy` (+ `agy-proxy`) | `google` via `agy-proxy`            |
-| `claude`      | Anthropic Claude Code   | `Dockerfile.claude`   | `claude`        | `anthropic`                               |
-| `opencode`    | OpenCode CLI            | `Dockerfile.opencode` | `opencode`      | `openrouter`, `anthropic`, `openai`, `google` |
-| `codex`       | OpenAI Codex CLI        | `Dockerfile.codex`    | `codex`         | `openai`                                  |
-| `omp`         | Oh My Pi Harness        | `Dockerfile.omp`      | `omp`           | none                                      |
-| `prime-agent` | Prime Agent (RLM)       | `Dockerfile.prime`    | `prime-agent`   | `prime`, `anthropic`, `openai`, `google`  |
-| `shell`       | Interactive Shell       | none                  | none            | none                                      |
+| Identifier    | Display name            | Kit (binary overlay)                               | Credentials kit (proxy-managed) |
+| :------------ | :---------------------- | :------------------------------------------------- | :------------------------------ |
+| `agy`         | Google Antigravity      | `agy` on `docker.io/sbx/antigravity-mixin`         | `agy-credentials`: `google`, `antigravity` (OAuth) |
+| `claude`      | Anthropic Claude Code   | `claude` on `docker.io/sbx/claude-mixin`           | `claude-credentials`: `anthropic` (API key or OAuth) |
+| `codex`       | OpenAI Codex CLI        | `codex` on `docker.io/sbx/codex-mixin`             | `codex-credentials`: `openai` (API key or OAuth) |
+| `opencode`    | OpenCode CLI            | `opencode` on `docker.io/sbx/opencode-mixin`       | `opencode-credentials`: `anthropic`, `openai`, `google`, `groq`, `openrouter`, `xai`, `github` |
+| `omp`         | Oh My Pi Harness        | `omp` (own overlay)                                | none |
+| `prime-agent` | Prime Agent (RLM)       | `prime-agent` (own overlay)                        | none |
+| `shell`       | Interactive Shell       | none                                               | none |
 
-Images stack as `Dockerfile.base` → one `Dockerfile.<agent>` per requested agent → the project's
-`Dockerfile.agy` (or the packaged default), and the result is loaded into `sbx` as the template.
+Agent kits never declare credentials themselves; the binaries come from Docker's published mixin
+images (used as the kit's `FROM`), so they track Docker's releases without a build pipeline here.
 
 ## Bundled mixin kits
 
 - **`chrome-devtools`**: headless Chromium plus the `chrome-devtools-mcp` server for browser automation.
 - **`chrome-host`**: added by `up --host-browser`; relays `127.0.0.1:9222` in the sandbox to a Chrome on the host.
 - **`mojo-stdlib`**: Bazelisk and LLVM `lit` for `modularml/mojo` standard library work.
-- **`agy-proxy`**: Antigravity's proxy-managed Google OAuth credential; attached automatically.
-- The agent kits above.
+- The agent kits above, and their `*-credentials` kits (attached by the tool, not listed by `kits list`).
+
+Any other v3 kit works too: a local kit directory, `git+https://...#dir=...`, or an image reference
+such as `docker.io/sbx/playwright:latest` in `kits:`.
 
 ### Host browser
 
 `agy-sandbox up --host-browser` starts Chrome on the host (or reuses one listening on the port) with
 a dedicated profile under `~/.agy-sandbox/host-browser/<sandbox>/` and attaches the `chrome-host`
 kit, so every harness reaches it at the same `127.0.0.1:9222` address as the in-sandbox Chromium.
-Requires the `chrome-devtools` kit. Kits are fixed when a sandbox is created, so switching an
-existing sandbox is done with `agy-sandbox upgrade --host-browser`, which keeps its contents.
+Requires the `chrome-devtools` kit. On an existing sandbox, `agy-sandbox upgrade --host-browser` adds it.
 
 ## Upgrading a sandbox without losing its contents
 
 A long-running sandbox accumulates state that is not in any config: packages the agent installed,
-tools it built, dotfiles it wrote. `up --rebuild` throws all of that away. `agy-sandbox upgrade`
-does not. It applies the current `agy.yaml` (added or removed kits, a different `auth_mode`, `env`,
-`ports`, the host browser) to the existing sandbox and keeps everything inside it.
+tools it built, dotfiles it wrote. `up --rebuild` throws all of that away. The two commands below do not.
 
-`sbx` keeps a sandbox in three places, and `upgrade` carries each one over explicitly:
+| Change in `agy.yaml` | Command | How |
+| :-- | :-- | :-- |
+| kit or agent added, `env`, `ports`, host browser turned on | `upgrade` | `sbx kit add` on the running sandbox; env on the session; `sbx ports` |
+| kit removed, kit argument changed, `auth_mode` changed, host browser turned off | `recreate` | snapshot the filesystem (`sbx template save`), copy kit volumes and the clone workspace out, remove, create from the snapshot, copy back |
+| `Dockerfile.agy`, `build_args`, `setup_scripts`, `clone` | `up --rebuild` | a new image cannot be merged into an existing filesystem |
 
-| What                        | How it survives                                                            |
-| :-------------------------- | :------------------------------------------------------------------------- |
-| the container filesystem    | `sbx template save` snapshots it; the new sandbox is created from that snapshot |
-| kit volumes (e.g. Claude sessions) | copied out with `sbx cp` before `sbx rm` deletes them, copied back after |
-| the clone-mode workspace    | same, including its git history and uncommitted changes                   |
+`recreate` keeps the snapshot as `<sandbox>:recreate-<timestamp>` until the next recreate, and prints
+the exact `sbx create` command to restore from it if anything fails half way.
 
-The snapshot is kept as `<image>:upgrade-<timestamp>` until the next upgrade, so a bad upgrade can
-be rolled back with `sbx create --name <sandbox> --template <snapshot> --pull never shell <path>`.
-If recreation fails, `upgrade` prints that command with the right values.
-
-What an upgrade cannot do: merge a new image into an existing filesystem. A changed
-`Dockerfile.agy` or `build_args` still needs `up --rebuild`. Likewise an agent added to `agy.yaml`
-after creation gets its kit, but its binary lives in the image layer; `upgrade` tells you when a
-requested agent is not installed in the sandbox.
-
-`up` on an existing sandbox reports when `agy.yaml` kits differ from the sandbox and points to
-`upgrade`. Kits re-run their install hooks on the snapshot, which is what the bundled kits are
-written for (settings are seeded only when missing, placeholders only in proxy-managed mode).
-
-### Sandbox-local logins and host secrets
-
-The built-in `sbx` shell injects `<SERVICE>_API_KEY=proxy-managed` placeholders for every service
-it knows, whether or not a secret is stored. In `sandbox-local` mode `agy-sandbox` blanks those on
-every session (`sbx run -e VAR=`), so no agent silently uses a host key you did not ask for.
+Sandboxes created by agy-sandbox 0.5 keep running and `up` resumes them, but they have no saved plan,
+so `upgrade` refuses them; use `recreate` (keeps contents) or `up --rebuild` once to move them to 0.6.
 
 ## Code Guardian
 
-Before `up --rebuild` or `down`, one `sbx exec` inside the sandbox reports login/session files for
-every agent, and for clone-mode sandboxes any uncommitted files, unpushed commits and sandbox-only
-branches. You are asked to confirm before anything is destroyed.
+Before `up --rebuild`, `recreate` or `down`, one `sbx exec` inside the sandbox reports login/session
+files for every agent, and for clone-mode sandboxes any uncommitted files, unpushed commits and
+sandbox-only branches. You are asked to confirm before anything is destroyed.
+
+## Development
+
+```bash
+uv sync --group dev
+.venv/bin/ruff check src tests
+.venv/bin/python -m unittest discover -s tests -t .   # sbx and docker are mocked
+scripts/validate-kits.sh                               # builds every kit descriptor through the v3 frontend (needs Docker)
+scripts/live-check.sh                                  # live gates on a throwaway sandbox (needs sbx >= 0.50)
+```
+
+Host-side state lives under `~/.agy-sandbox` (`AGY_SANDBOX_STATE_DIR` overrides it).
 
 ## License
 
