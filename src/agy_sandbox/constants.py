@@ -4,15 +4,18 @@ import re
 DEFAULT_CONFIG_FILE = "agy.yaml"
 LOCAL_DOCKERFILE_NAME = "Dockerfile.agy"
 DEFAULT_DOCKERFILE_NAME = "Dockerfile.default"
-BASE_DOCKERFILE_NAME = "Dockerfile.base"
-DEFAULT_BASE_IMAGE = "agy-base:latest"
 
-# Host-side state (host browser profiles, generated per-project kits)
+# Host-side state; see paths.py for everything derived from it
 STATE_DIR = "~/.agy-sandbox"
 
-# Login modes. These are sbx's own terms: a sandbox-local login is held by the
-# agent inside the VM; a proxy-managed one lives in `sbx secret` on the host and
-# the sandbox proxy injects it on outbound requests.
+# The image every project workload builds on unless agy.yaml says otherwise:
+# Docker's agentless sandbox base (Debian, bash, git, curl, gh, jq, python, uv, docker).
+DEFAULT_BASE_IMAGE = "docker.io/sbx/shell-image:latest"
+
+# Login modes. sbx's own terms: a sandbox-local login is held by the agent
+# inside the VM; a proxy-managed one lives in `sbx secret` on the host and the
+# sandbox proxy injects it. The switch is which kits are attached: a bundled
+# `<kit>-credentials` kit is attached next to `<kit>` only in proxy-managed mode.
 AUTH_MODE_SANDBOX_LOCAL = "sandbox-local"
 AUTH_MODE_PROXY_MANAGED = "proxy-managed"
 AUTH_MODES = (AUTH_MODE_SANDBOX_LOCAL, AUTH_MODE_PROXY_MANAGED)
@@ -20,41 +23,27 @@ LEGACY_AUTH_MODES = {
     "sbx_persistent": AUTH_MODE_SANDBOX_LOCAL,
     "sbx_proxy": AUTH_MODE_PROXY_MANAGED,
 }
-# The kit argument every bundled agent kit that cares about login mode declares.
-AUTH_MODE_KIT_ARG = "auth_mode"
-# A bundled kit `<name>-proxy` holds the proxy credential declaration for kit
-# `<name>` and is attached only in proxy-managed mode.
-PROXY_KIT_SUFFIX = "-proxy"
+CREDENTIALS_KIT_SUFFIX = "-credentials"
 
-# sbx launches every sandbox as a plain shell; agents are mixin kits on top.
-SBX_AGENT = "shell"
-# The built-in shell sandbox injects these as `proxy-managed` placeholders for
-# every service sbx knows, whether or not a secret is stored. In sandbox-local
-# mode they are blanked on the session so no agent silently uses a host key.
-PROXY_PLACEHOLDER_ENV = (
-    "ANTHROPIC_API_KEY",
-    "GOOGLE_API_KEY",
-    "GEMINI_API_KEY",
-    "GROQ_API_KEY",
-    "MISTRAL_API_KEY",
-    "NEBIUS_API_KEY",
-    "OPENAI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "XAI_API_KEY",
-)
-# `agy-sandbox upgrade` snapshots the sandbox as <image>:<UPGRADE_TAG_PREFIX><timestamp>
-UPGRADE_TAG_PREFIX = "upgrade-"
-UPGRADE_STAGING_DIR = f"{STATE_DIR}/upgrades"
+# v3 kit descriptors
+KIT_DESCRIPTOR_SYNTAX = "# syntax=docker/sandbox-kit:3"
+KIT_SCHEMA_VERSION = "3"
+WORKLOAD_KIT_NAME = "workload"
+REMOTE_KIT_SCHEMES = ("git+", "git@", "https://", "http://", "oci://", "docker.io/", "ghcr.io/")
 
 # Bundled kit names referenced by code
 KIT_CHROME_DEVTOOLS = "chrome-devtools"
 KIT_CHROME_HOST = "chrome-host"
-PROJECT_KIT_NAME = "project-setup"
-REMOTE_KIT_SCHEMES = ("git+", "git@", "https://", "http://", "oci://")
+
+# `agy-sandbox recreate` snapshots the sandbox as <sandbox>:<RECREATE_TAG_PREFIX><timestamp>
+RECREATE_TAG_PREFIX = "recreate-"
+
+# sbx versions: in-place upgrades need `sbx kit add` with startup hooks (0.48)
+MIN_SBX_VERSION_FOR_UPGRADE = (0, 48, 0)
+PLAN_SCHEMA_VERSION = 1
 
 # Host browser (Chrome on the host, driven from the sandbox via kits/chrome-host)
 DEFAULT_HOST_BROWSER_PORT = 9222
-HOST_BROWSER_STATE_DIR = f"{STATE_DIR}/host-browser"
 HOST_BROWSER_STARTUP_TIMEOUT = 15
 
 # Timeouts (seconds)
@@ -62,8 +51,8 @@ DEFAULT_CMD_TIMEOUT = 10
 REMOVE_CMD_TIMEOUT = 15
 # `sbx exec` starts a stopped sandbox first, which runs every kit's startup hooks
 SANDBOX_EXEC_TIMEOUT = 300
-# Snapshots and file copies scale with the sandbox; no timeout, only stdin closed
-SNAPSHOT_TIMEOUT = None
+# Builds, snapshots and copies scale with the sandbox; no timeout, only stdin closed
+LONG_TIMEOUT = None
 DAEMON_PREFLIGHT_TIMEOUT = 5
 BANNER_WIDTH = 78
 EXIT_CODE_INTERRUPTED = 130

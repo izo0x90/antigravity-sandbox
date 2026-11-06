@@ -4,13 +4,14 @@ agy.yaml: one flat document describing a sandbox.
     profile: default
     project_name: my_app
     agent: claude                 # primary agent; its kit is always attached
-    kits: [claude, opencode]      # agent kits and mixin kits, bundled names, local dirs or remote refs
+    kits: [claude, opencode]      # agent kits and mixin kits: bundled names, local dirs or remote refs
     auth_mode: sandbox-local      # or proxy-managed
     clone: true                   # work on a private in-VM clone instead of a bind mount
     ports: ["3000:3000"]          # published to the host
     host_browser: {enabled, port, headless}   # only written when non-default
-    kit_args: {chrome-host.host_port: "9222"} # passed through to `sbx run --kit-arg`
-    build_args: {PYTHON_VERSION: "3.12"}
+    kit_args: {chrome-host.host_port: "9222"} # passed through as `--kit-arg`
+    base_image: docker.io/sbx/shell-image:latest   # only written when non-default
+    build_args: {PYTHON_VERSION: "3.12"}      # ARGs of Dockerfile.agy / the default Dockerfile
     setup_scripts: [uv sync]      # run once inside the VM when the sandbox is created
     env: [ENVIRONMENT=development]
 
@@ -28,11 +29,21 @@ from .agents import AGENT_AGY, AGENT_SPECS, AgentSpec
 from .constants import (
     AUTH_MODE_SANDBOX_LOCAL,
     AUTH_MODES,
+    DEFAULT_BASE_IMAGE,
     DEFAULT_CONFIG_FILE,
     DEFAULT_HOST_BROWSER_PORT,
     LEGACY_AUTH_MODES,
+    slugify_project_name,
 )
-from .naming import image_name, sandbox_name
+from .errors import ConfigError
+
+
+def sandbox_name(project_name: str, profile: str = "default") -> str:
+    project = slugify_project_name(project_name)
+    prof = slugify_project_name(profile)
+    if prof == "default":
+        return f"agy-sandbox-{project}"
+    return f"agy-sandbox-{project}--{prof}"
 
 
 @dataclass
@@ -65,6 +76,7 @@ class AgyConfig:
     ports: List[str] = field(default_factory=list)
     host_browser: HostBrowserConfig = field(default_factory=HostBrowserConfig)
     kit_args: Dict[str, str] = field(default_factory=dict)
+    base_image: str = DEFAULT_BASE_IMAGE
     build_args: Dict[str, str] = field(default_factory=dict)
     setup_scripts: List[str] = field(default_factory=list)
     env: List[str] = field(default_factory=list)
@@ -74,10 +86,6 @@ class AgyConfig:
     @property
     def sandbox_name(self) -> str:
         return sandbox_name(self.project_name, self.profile)
-
-    @property
-    def image_name(self) -> str:
-        return image_name(self.project_name)
 
     @property
     def agent_spec(self) -> AgentSpec:
@@ -99,7 +107,7 @@ class AgyConfig:
         for kit in [self.agent] + self.all_kits():
             key = os.path.basename(kit.rstrip("/\\")) if ("/" in kit or "\\" in kit) else kit
             spec = AGENT_SPECS.get(key)
-            if spec and spec not in specs:
+            if spec and spec.has_kit and spec not in specs:
                 specs.append(spec)
         return specs
 
@@ -138,11 +146,11 @@ class AgyConfig:
             notes.append(f"`auth_mode: {raw_auth}` is now `auth_mode: {LEGACY_AUTH_MODES[raw_auth]}`")
             raw_auth = LEGACY_AUTH_MODES[raw_auth]
         if raw_auth not in AUTH_MODES:
-            raise ValueError(f"auth_mode must be one of {', '.join(AUTH_MODES)} (got '{raw_auth}')")
+            raise ConfigError(f"auth_mode must be one of {', '.join(AUTH_MODES)} (got '{raw_auth}')")
 
         agent = data.get("agent") or AGENT_AGY
         if agent not in AGENT_SPECS:
-            raise ValueError(f"Unknown agent '{agent}'. Available agents: {', '.join(AGENT_SPECS)}")
+            raise ConfigError(f"Unknown agent '{agent}'.", hint=f"Available agents: {', '.join(AGENT_SPECS)}")
 
         kit_args = data.get("kit_args") or {}
         return cls(
@@ -155,6 +163,7 @@ class AgyConfig:
             ports=[str(p) for p in (data.get("ports") or []) if p],
             host_browser=HostBrowserConfig.from_dict(data.get("host_browser")),
             kit_args={str(k): str(v) for k, v in kit_args.items()},
+            base_image=str(data.get("base_image") or DEFAULT_BASE_IMAGE),
             build_args={str(k): str(v) for k, v in (data.get("build_args") or {}).items()},
             setup_scripts=[str(s) for s in (data.get("setup_scripts") or [])],
             env=[str(e) for e in (data.get("env") or [])],
@@ -177,6 +186,8 @@ class AgyConfig:
             data["host_browser"] = self.host_browser.to_dict()
         if self.kit_args:
             data["kit_args"] = dict(self.kit_args)
+        if self.base_image != DEFAULT_BASE_IMAGE:
+            data["base_image"] = self.base_image
         data["build_args"] = dict(self.build_args)
         data["setup_scripts"] = list(self.setup_scripts)
         data["env"] = list(self.env)
@@ -185,9 +196,17 @@ class AgyConfig:
 
 def load_config(path: str = DEFAULT_CONFIG_FILE) -> AgyConfig:
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Configuration file {path} not found.")
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
+        raise ConfigError(
+            f"Configuration file '{path}' not found.",
+            hint="Run 'agy-sandbox auto-init' to detect project runtimes, or 'agy-sandbox init' to write a template.",
+        )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path} is not valid YAML: {e}")
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} must contain a mapping at the top level.")
     return AgyConfig.from_dict(data)
 
 
@@ -200,7 +219,7 @@ def migration_warning(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> Opt
     """A warning block to print when the file used a pre-0.5 layout, or None."""
     if not config.migration_notes:
         return None
-    lines = [f"⚠️  {path} uses a pre-0.5 layout. It still loads, but please update it:"]
+    lines = [f"{path} uses a pre-0.5 layout. It still loads, but please update it:"]
     lines += [f"   - {note}" for note in config.migration_notes]
     lines.append("   Run 'agy-sandbox config migrate' to rewrite it in the current layout.")
     return "\n".join(lines)

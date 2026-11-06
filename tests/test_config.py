@@ -1,130 +1,126 @@
 import os
 import tempfile
 import unittest
-from pathlib import Path
 
-from agy_sandbox.config import AgyConfig, HostBrowserConfig, default_config, load_config, migration_warning, save_config
+import yaml
+
+from agy_sandbox.config import (
+    AgyConfig,
+    HostBrowserConfig,
+    default_config,
+    load_config,
+    migration_warning,
+    sandbox_name,
+    save_config,
+)
+from agy_sandbox.constants import DEFAULT_BASE_IMAGE
+from agy_sandbox.errors import ConfigError
 
 
-class TestFlatConfig(unittest.TestCase):
-    def test_defaults(self):
-        config = AgyConfig.from_dict({})
-        self.assertEqual(config.agent, "agy")
-        self.assertEqual(config.auth_mode, "sandbox-local")
-        self.assertFalse(config.clone)
-        self.assertEqual(config.kits, [])
-        self.assertEqual(config.migration_notes, [])
+class TestNaming(unittest.TestCase):
+    def test_sandbox_name_slugifies_and_appends_profile(self):
+        self.assertEqual(sandbox_name("My App"), "agy-sandbox-my-app")
+        self.assertEqual(sandbox_name("my_app", "staging"), "agy-sandbox-my-app--staging")
+        self.assertEqual(AgyConfig(project_name="demo").sandbox_name, "agy-sandbox-demo")
 
-    def test_null_values_are_tolerated(self):
-        config = AgyConfig.from_dict({
-            "profile": None, "project_name": None, "agent": None, "kits": None,
-            "build_args": None, "setup_scripts": None, "env": None, "ports": None,
-        })
-        self.assertEqual(config.profile, "default")
-        self.assertEqual(config.project_name, "default_project")
-        self.assertEqual(config.build_args, {})
 
-    def test_names(self):
-        config = AgyConfig(project_name="My App", profile="client_a")
-        self.assertEqual(config.sandbox_name, "agy-sandbox-my-app--client-a")
-        self.assertEqual(AgyConfig(project_name="my_app").sandbox_name, "agy-sandbox-my-app")
-        self.assertEqual(config.image_name, "agy-sandbox-my-app")
+class TestFromDict(unittest.TestCase):
+    def test_current_layout_round_trips(self):
+        data = {
+            "profile": "default", "project_name": "demo", "agent": "claude", "kits": ["claude", "chrome-devtools"],
+            "auth_mode": "proxy-managed", "clone": True, "ports": ["3000:3000"],
+            "host_browser": {"enabled": True, "port": 9333, "headless": True},
+            "kit_args": {"chrome-host.host_port": "9333"}, "base_image": "docker.io/me/base:1",
+            "build_args": {"PYTHON_VERSION": "3.12"}, "setup_scripts": ["uv sync"], "env": ["A=1"],
+        }
+        cfg = AgyConfig.from_dict(data)
+        self.assertEqual(cfg.migration_notes, [])
+        self.assertEqual(cfg.to_dict(), data)
 
-    def test_all_kits_puts_primary_agent_first(self):
-        config = AgyConfig(agent="claude", kits=["chrome-devtools", "claude", "opencode", "."])
-        self.assertEqual(config.all_kits(), ["claude", "chrome-devtools", "opencode"])
+    def test_defaults_are_minimal_and_base_image_is_omitted_when_default(self):
+        cfg = AgyConfig.from_dict({"project_name": "demo"})
+        self.assertEqual(cfg.agent, "agy")
+        self.assertEqual(cfg.auth_mode, "sandbox-local")
+        self.assertEqual(cfg.base_image, DEFAULT_BASE_IMAGE)
+        self.assertNotIn("base_image", cfg.to_dict())
+        self.assertNotIn("host_browser", cfg.to_dict())
+        self.assertNotIn("ports", cfg.to_dict())
+
+    def test_all_kits_puts_primary_agent_first_without_duplicates(self):
+        cfg = AgyConfig(agent="claude", kits=["opencode", "claude", ".", ""])
+        self.assertEqual(cfg.all_kits(), ["claude", "opencode"])
+        self.assertEqual([s.identifier for s in cfg.requested_agent_specs()], ["claude", "opencode"])
 
     def test_shell_agent_has_no_kit(self):
-        self.assertEqual(AgyConfig(agent="shell", kits=["omp"]).all_kits(), ["omp"])
+        cfg = AgyConfig(agent="shell", kits=["chrome-devtools"])
+        self.assertEqual(cfg.all_kits(), ["chrome-devtools"])
+        self.assertEqual(cfg.requested_agent_specs(), [])
 
-    def test_requested_agent_specs_from_names_and_paths(self):
-        config = AgyConfig(agent="agy", kits=["/usr/share/kits/omp", "/opt/kits/prime-agent", "chrome-devtools"])
-        self.assertEqual([s.identifier for s in config.requested_agent_specs()], ["agy", "omp", "prime-agent"])
+    def test_requested_agents_recognise_local_kit_dirs_by_basename(self):
+        cfg = AgyConfig(agent="shell", kits=["/some/where/codex"])
+        self.assertEqual([s.identifier for s in cfg.requested_agent_specs()], ["codex"])
 
-    def test_invalid_auth_mode_and_agent_are_rejected(self):
-        with self.assertRaises(ValueError):
-            AgyConfig.from_dict({"auth_mode": "magic"})
-        with self.assertRaises(ValueError):
+    def test_unknown_agent_and_auth_mode_raise_config_error(self):
+        with self.assertRaises(ConfigError) as ctx:
             AgyConfig.from_dict({"agent": "nope"})
-
-    def test_to_dict_omits_unset_optional_sections(self):
-        data = AgyConfig(agent="claude", kits=["claude"]).to_dict()
-        self.assertNotIn("ports", data)
-        self.assertNotIn("host_browser", data)
-        self.assertNotIn("kit_args", data)
-        data = AgyConfig(ports=["3000:3000"], kit_args={"agy-proxy.auth_method": "gcp"}).to_dict()
-        self.assertEqual(data["ports"], ["3000:3000"])
-        self.assertEqual(data["kit_args"], {"agy-proxy.auth_method": "gcp"})
-
-    def test_save_load_roundtrip(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "agy.yaml")
-            config = AgyConfig(
-                project_name="demo", agent="claude", kits=["claude", "opencode"], auth_mode="proxy-managed",
-                clone=True, ports=["8080:80"], host_browser=HostBrowserConfig(enabled=True, port=9333, headless=True),
-                build_args={"PYTHON_VERSION": "3.12"}, setup_scripts=["uv sync"], env=["A=1"],
-            )
-            save_config(config, path)
-            loaded = load_config(path)
-            self.assertEqual(loaded, config)
-            self.assertNotIn("sbx:", Path(path).read_text())
-
-    def test_default_config(self):
-        config = default_config(agent="claude", kits=("opencode", "chrome-devtools", "claude"), clone=True, project_name="x")
-        self.assertEqual(config.agent, "claude")
-        self.assertEqual(config.kits, ["claude", "opencode", "chrome-devtools"])
-        self.assertTrue(config.clone)
-        self.assertEqual(config.env, ["ENVIRONMENT=development"])
-        self.assertEqual(config.build_args, {})
+        self.assertIn("Available agents", ctx.exception.hint)
+        with self.assertRaises(ConfigError):
+            AgyConfig.from_dict({"auth_mode": "magic"})
 
 
-class TestLegacyMigration(unittest.TestCase):
-    LEGACY = {
-        "profile": "default",
-        "project_name": "old_app",
-        "agent": "claude",
-        "auth_mode": "sbx_proxy",
-        "use_native_login": False,
-        "workspace_path": "/workspace",
-        "sbx": {"enabled": True, "agent": "claude", "clone": True, "kits": ["claude", "omp"], "ports": ["3000:3000"]},
-    }
+class TestLegacyLayout(unittest.TestCase):
+    def test_pre_05_file_is_translated_and_noted(self):
+        legacy = {
+            "project_name": "old", "use_native_login": True, "workspace_path": "/w",
+            "runtime": {"python": "3.11", "apt_packages": ["cmake", "jq"]},
+            "sbx": {"enabled": True, "agent": "claude", "kits": ["claude"], "clone": True, "auth_mode": "sbx_proxy"},
+        }
+        cfg = AgyConfig.from_dict(legacy)
+        self.assertEqual(cfg.agent, "claude")
+        self.assertTrue(cfg.clone)
+        self.assertEqual(cfg.auth_mode, "proxy-managed")
+        self.assertEqual(cfg.build_args, {"PYTHON_VERSION": "3.11", "APT_PACKAGES": "cmake jq"})
+        self.assertEqual(len(cfg.migration_notes), 5)
+        warning = migration_warning(cfg, "agy.yaml")
+        self.assertIn("config migrate", warning)
+        self.assertIn("`auth_mode: sbx_proxy` is now `auth_mode: proxy-managed`", warning)
+        # Rewriting drops every legacy key
+        self.assertEqual(AgyConfig.from_dict(cfg.to_dict()).migration_notes, [])
 
-    def test_legacy_file_loads_with_notes(self):
-        config = AgyConfig.from_dict(self.LEGACY)
-        self.assertEqual(config.agent, "claude")
-        self.assertEqual(config.kits, ["claude", "omp"])
-        self.assertTrue(config.clone)
-        self.assertEqual(config.ports, ["3000:3000"])
-        self.assertEqual(config.auth_mode, "proxy-managed")
-        notes = "\n".join(config.migration_notes)
-        for fragment in ("`sbx:` block", "use_native_login", "workspace_path", "sbx_proxy"):
-            self.assertIn(fragment, notes)
-
-    def test_sbx_persistent_maps_to_sandbox_local(self):
-        self.assertEqual(AgyConfig.from_dict({"auth_mode": "sbx_persistent"}).auth_mode, "sandbox-local")
-
-    def test_sbx_boolean_and_runtime_block(self):
-        config = AgyConfig.from_dict({"sbx": True, "runtime": {"python": "3.11", "apt_packages": ["cmake", "ffmpeg"]}})
-        self.assertEqual(config.build_args, {"PYTHON_VERSION": "3.11", "APT_PACKAGES": "cmake ffmpeg"})
-        self.assertTrue(any("runtime" in n for n in config.migration_notes))
-
-    def test_migration_warning_text(self):
-        config = AgyConfig.from_dict(self.LEGACY)
-        warning = migration_warning(config, "agy.yaml")
-        self.assertIn("pre-0.5 layout", warning)
-        self.assertIn("agy-sandbox config migrate", warning)
+    def test_current_file_has_no_warning(self):
         self.assertIsNone(migration_warning(AgyConfig()))
 
-    def test_saving_a_migrated_config_writes_the_new_layout(self):
+
+class TestFiles(unittest.TestCase):
+    def test_load_and_save(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "agy.yaml")
-            save_config(AgyConfig.from_dict(self.LEGACY), path)
-            text = Path(path).read_text()
-            self.assertNotIn("sbx:", text)
-            self.assertNotIn("use_native_login", text)
-            self.assertIn("auth_mode: proxy-managed", text)
-            self.assertEqual(load_config(path).migration_notes, [])
+            save_config(AgyConfig(project_name="demo", kits=["agy"], host_browser=HostBrowserConfig(enabled=True)), path)
+            cfg = load_config(path)
+            self.assertEqual(cfg.project_name, "demo")
+            self.assertTrue(cfg.host_browser.enabled)
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(list(yaml.safe_load(f))[0], "profile")
 
+    def test_missing_file_is_a_config_error_with_hint(self):
+        with self.assertRaises(ConfigError) as ctx:
+            load_config("/nonexistent/agy.yaml")
+        self.assertIn("auto-init", ctx.exception.hint)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_invalid_yaml_and_non_mapping_are_config_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "agy.yaml")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("- just\n- a list\n")
+            with self.assertRaises(ConfigError):
+                load_config(path)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("a: [unclosed\n")
+            with self.assertRaises(ConfigError):
+                load_config(path)
+
+    def test_default_config_lists_requested_agents_as_kits(self):
+        cfg = default_config(agent="opencode", kits=("codex", "chrome-devtools"), clone=True, project_name="x")
+        self.assertEqual(cfg.kits, ["opencode", "codex", "chrome-devtools"])
+        self.assertTrue(cfg.clone)
+        self.assertEqual(cfg.env, ["ENVIRONMENT=development"])

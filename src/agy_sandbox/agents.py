@@ -1,9 +1,7 @@
 """
-The agent registry. Every agent runs the same way: sbx starts a plain shell on
-the project image, and the agent's bundled kit (kits/<identifier>/spec.yaml)
-plus its stacked Dockerfile layer (docker/<dockerfile>) provide the binary,
-config, credentials and network policy. Nothing outside this file and those two
-directories knows an agent by name.
+The agent registry. Every agent is a bundled v3 mixin kit (kits/<identifier>/)
+that carries its binary, network policy and setup hooks; nothing outside this
+file and that directory knows an agent by name.
 """
 import shutil
 from dataclasses import dataclass
@@ -26,9 +24,6 @@ class AgentSpec:
     identifier: str
     display_name: str
     cli_binary: str = ""
-    # Stacked image layer that installs the binary; empty for agents with no layer (shell)
-    dockerfile: str = ""
-    image_tag: str = ""
     # Arguments that run the agent in read-only/plan mode for auto-init analysis
     read_only_args: Tuple[str, ...] = ()
     # `sbx secret` services this agent can use in proxy-managed mode
@@ -51,10 +46,8 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier=AGENT_AGY,
         display_name="Google Antigravity",
         cli_binary="agy",
-        dockerfile="Dockerfile.agy",
-        image_tag="agy-base-agy:latest",
         read_only_args=("--add-dir", "{cwd}", "--mode", "plan", "--print", "{prompt}"),
-        secret_services=("google",),
+        secret_services=("google", "antigravity"),
         signature_files=("antigravity.yaml",),
         session_files=(".gemini",),
     ),
@@ -62,8 +55,6 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier=AGENT_CLAUDE,
         display_name="Anthropic Claude Code",
         cli_binary="claude",
-        dockerfile="Dockerfile.claude",
-        image_tag="agy-base-claude:latest",
         read_only_args=("-p", "{prompt}"),
         secret_services=("anthropic",),
         signature_files=("CLAUDE.md", ".claude"),
@@ -73,8 +64,6 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier=AGENT_OPENCODE,
         display_name="OpenCode CLI",
         cli_binary="opencode",
-        dockerfile="Dockerfile.opencode",
-        image_tag="agy-base-opencode:latest",
         read_only_args=("run", "--agent", "plan", "{prompt}"),
         secret_services=("openrouter", "anthropic", "openai", "google"),
         signature_files=("opencode.json", ".opencode"),
@@ -84,8 +73,6 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier=AGENT_CODEX,
         display_name="OpenAI Codex CLI",
         cli_binary="codex",
-        dockerfile="Dockerfile.codex",
-        image_tag="agy-base-codex:latest",
         read_only_args=("exec", "{prompt}"),
         secret_services=("openai",),
         signature_files=(".codex",),
@@ -95,8 +82,6 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier=AGENT_OMP,
         display_name="Oh My Pi Harness",
         cli_binary="omp",
-        dockerfile="Dockerfile.omp",
-        image_tag="agy-base-omp:latest",
         read_only_args=("-p", "{prompt}", "--tools=read,grep,glob"),
         session_files=(".omp",),
     ),
@@ -104,8 +89,6 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         identifier=AGENT_PRIME_AGENT,
         display_name="Prime Agent (RLM)",
         cli_binary="prime-agent",
-        dockerfile="Dockerfile.prime",
-        image_tag="agy-base-prime:latest",
         read_only_args=("-p", "--no-session", "--no-tools", "{prompt}"),
         secret_services=("prime", "anthropic", "openai", "google"),
         signature_files=("AGENTS.md", ".prime"),
