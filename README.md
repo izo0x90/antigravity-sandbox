@@ -65,7 +65,9 @@ agy-sandbox down
 
 ```yaml
 profile: default
-project_name: my_app
+project_name: my_app           # any name you like; it only shapes the sandbox name
+sandbox_id: 3f9a2c1e8b7d4f60a1c2d3e4f5a6b7c8   # written by agy-sandbox on the first `up`; do not edit
+sandbox_version: 1             # bumped by `recreate --next`; which version of the sandbox agy.yaml points at
 agent: claude                  # primary agent; its kit is always attached
 kits:                          # agent kits and mixin kits (bundled names, local kit dirs, git+/oci/docker.io refs)
   - claude
@@ -98,6 +100,23 @@ env:                           # applied to every session
 Files from 0.5 need no changes. Pre-0.5 files (with an `sbx:` block, `use_native_login`,
 `workspace_path`, `sbx_persistent`/`sbx_proxy`) still load; every command prints what changed and
 `agy-sandbox config migrate` rewrites them.
+
+### Which sandbox is mine
+
+`agy.yaml` is the only record of which sandbox a project means. The first time a sandbox has to be
+created, agy-sandbox writes a random `sandbox_id` (a UUID) and `sandbox_version: 1` into the file,
+touching nothing else in it. The sandbox is then named
+`agy-sandbox-<project slug>-<first 20 hex of the id>-v<version>`: the slug is there so `sbx ls` reads
+well, the id is what makes the name unique (two projects can never share a sandbox, whatever they are
+called), and the version is bumped by `recreate --next`. Commit the file and the same sandbox name
+follows the project to every machine.
+
+A project whose file has no `sandbox_id` keeps using its pre-identity sandbox, `agy-sandbox-<slug>`,
+for as long as that exists (every sandbox made by 0.5 or an earlier 0.6). `recreate --next` is how it
+gets an identity: the copy it builds is version 2, and the old sandbox stays until you remove it.
+`agy-sandbox versions` lists every version that exists and which one the file points at; `--version N`
+on `up`, `upgrade`, `recreate` and `down` acts on another existing version (a version that does not
+exist is simply not found, nothing creates one by number).
 
 ## How a sandbox is composed
 
@@ -140,22 +159,27 @@ says so before creating anything. Use `sandbox-local` for that combination.
 - `agy-sandbox auto-init [--analyzer AGENT] [same options as init]`
   Runs a host agent in read-only mode to infer `build_args`, `setup_scripts`, `env` and kits, falling
   back to an offline manifest scanner. Flags you pass win over what the analyzer inferred.
-- `agy-sandbox up [--rebuild] [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
+- `agy-sandbox up [--rebuild] [--version N] [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
   Writes the workload kit, creates the sandbox (sbx builds the image) or resumes it, and attaches.
-  On resume it reports how `agy.yaml` differs from the sandbox and which command applies it.
-- `agy-sandbox upgrade [--host-browser] [-p HOST:SANDBOX] [--no-attach]`
+  On resume it reports how `agy.yaml` differs from the sandbox and which command applies it. A project
+  creating its first sandbox is given a `sandbox_id` in `agy.yaml`.
+- `agy-sandbox upgrade [--version N] [--host-browser] [-p HOST:SANDBOX] [--no-attach]`
   Applies additions in place: new kits or agents (`sbx kit add`, binaries included), env, ports, the
   host browser. Refuses anything else and names the command to use.
-- `agy-sandbox recreate [--as NAME] [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
+- `agy-sandbox recreate [--next] [--version N] [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
   Rebuilds the sandbox from a snapshot of its own filesystem, carrying kit volumes and the clone
   workspace across, for removed kits, changed kit arguments and a changed login mode.
-  With `--as NAME` it builds a second sandbox called NAME beside this one and leaves the original
-  untouched, so you can check the copy and remove the old one (`sbx rm`) when satisfied. A sandbox
-  built by agy-sandbox 0.5 ran its sessions as root; the copy is converted to the agent user and the
-  old root home is moved into `/home/agent`. Afterwards a full file-by-file comparison of the two
-  sandboxes is written to `~/.agy-sandbox/recreate-<name>-<timestamp>.txt` and summarised, so you can
-  confirm nothing was lost before you delete the original.
-- `agy-sandbox down [-y]`
+  With `--next` it builds the next version of the sandbox beside this one, leaves the current one
+  untouched, and points `agy.yaml` at the new one once all the data is in, so you can check the copy
+  and remove the old one (`sbx rm`) when satisfied. A sandbox built by agy-sandbox 0.5 ran its
+  sessions as root; the copy is converted to the agent user and the old root home is moved into
+  `/home/agent`. Afterwards a full file-by-file comparison of the two sandboxes is written to
+  `~/.agy-sandbox/recreate-<name>-<timestamp>.txt` and summarised, so you can confirm nothing was
+  lost before you delete the original.
+- `agy-sandbox versions`
+  Lists this project's sandbox versions, which one `agy.yaml` points at, and a pre-identity sandbox
+  if one is still around.
+- `agy-sandbox down [--version N] [-y]`
   Removes the sandbox after the guardian check, and stops a host browser it started.
 
 `--no-attach` does the work and returns instead of opening the session; `-y` answers the guardian's
@@ -217,10 +241,11 @@ the exact `sbx create` command to restore from it if anything fails half way.
 
 Sandboxes created by agy-sandbox 0.5 keep running and `up` resumes them, but they have no saved plan,
 so `upgrade` refuses them. They also ran their sessions as root. To move one to 0.6 on the agent user
-without losing its contents, use `recreate --as <new-name>`: it builds the upgraded sandbox beside the
-old one, converts the user, migrates the old root home, and verifies the result, so you keep the
-original until you have checked the copy. `recreate` without `--as` refuses a sandbox whose sessions
-start as root (it would replace the sandbox in place and strand the root home) and points at `--as`.
+without losing its contents, use `recreate --next`: it builds the upgraded sandbox beside the old one
+(as version 2, under a fresh `sandbox_id`), converts the user, migrates the old root home, verifies
+the result and points `agy.yaml` at the copy, so you keep the original until you have checked it.
+`recreate` without `--next` refuses a sandbox whose sessions start as root (it would replace the
+sandbox in place and strand the root home) and points at `--next`.
 
 ## Code Guardian
 

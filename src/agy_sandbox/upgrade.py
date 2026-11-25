@@ -14,11 +14,11 @@ import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from . import compose, console, inventory, kits, paths, sandbox, snapshot, workload
 from .compose import SandboxPlan, kit_args_for_kit
-from .config import AgyConfig
+from .config import AgyConfig, write_identity
 from .constants import MIN_SBX_VERSION_FOR_UPGRADE, RECREATE_TAG_PREFIX, SBX_UPGRADE_HINT
 from .engine import _session, desired_plan, host_browser_for, report_missing_secrets
 from .errors import AgyError, SandboxError, UpgradeRefused
@@ -133,13 +133,13 @@ def recreate(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
             # A snapshot carries the old image; recording a new workload as applied would hide the change forever.
             raise UpgradeRefused([r for r in drift.reasons() if "workload" in r or "clone" in r], hint=_remedy_hint(drift))
     # A recreated sandbox starts its sessions as agent. If the old one starts as someone else (a
-    # 0.5 box runs as root), recreating in place would strand that user's home; `recreate --as`
+    # 0.5 box runs as root), recreating in place would strand that user's home; `recreate --next`
     # knows how to convert root, and only root.
     user = _session_user(name)
     if user != snapshot.AGENT_USER:
         raise AgyError(f"Sandbox '{name}' starts its sessions as '{user}', but a recreated sandbox starts as "
                        f"'{snapshot.AGENT_USER}' and would leave that user's files behind.",
-                       hint=(f"Build a converted copy beside it instead: agy-sandbox recreate --as {config.project_name}-v2"
+                       hint=("Build a converted copy beside it instead: agy-sandbox recreate --next"
                              if user == snapshot.ROOT_USER else None))
     workload.write(config, cwd)
     plan = replace(wanted, clone=saved.clone, workspace=saved.workspace)
@@ -221,7 +221,7 @@ def _exec_or_raise(name: str, script: str, user: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# recreate --as: build a new sandbox beside the old one, keeping the old untouched
+# recreate --next: build the next version beside the current one, keeping it untouched
 # ---------------------------------------------------------------------------
 def _migrate_root_home(name: str) -> List[str]:
     """
@@ -244,12 +244,14 @@ def _inventory(name: str, extra_paths: Sequence[str] = ()) -> str:
     return sandbox.exec_script(name, inventory.script(extra_paths)).stdout or ""
 
 
-def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = True) -> int:
+def recreate_next(config: AgyConfig, cwd: Path, *, attach: bool = True, config_path: Optional[str] = None) -> int:
     """
-    Snapshots the configured sandbox and builds a second sandbox named `new_name` from
-    that snapshot, with the 0.6 kits. The original sandbox is never modified or removed.
+    Snapshots the sandbox agy.yaml points at and builds the next version of it from that
+    snapshot, with the 0.6 kits, beside it. The current sandbox is never modified or removed.
+    Once the new one holds all the data, agy.yaml is rewritten to point at it (its sandbox_id
+    and sandbox_version); a project without an id gets one here.
 
-    When the original starts its sessions as root (built by agy-sandbox 0.5), the
+    When the current sandbox starts its sessions as root (built by agy-sandbox 0.5), the
     snapshot's start-user is flipped to agent and the old root home is migrated into
     /home/agent, so the copy comes back on the agent user with its filesystem intact.
     """
@@ -257,18 +259,19 @@ def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = T
     sandbox.require()
     old_name = config.sandbox_name
     _require_exists(old_name)
-    new_sandbox = config.sandbox_name_for(new_name)
+    new_config = config.next_version()
+    new_sandbox = new_config.sandbox_name
     if sandbox.exists(new_sandbox):
-        raise AgyError(f"Sandbox '{new_sandbox}' already exists.",
-                       hint=f"Choose another name, or remove it with 'sbx rm -f {new_sandbox}'.")
+        raise AgyError(f"Sandbox '{new_sandbox}' (version {new_config.sandbox_version}) already exists.",
+                       hint=f"'agy-sandbox versions' lists them; remove it with 'sbx rm -f {new_sandbox}' to build it again.")
 
     saved = compose.load_plan(old_name)
-    wanted = desired_plan(config, cwd, write=False)
+    wanted = desired_plan(new_config, cwd, write=False)
     if saved is None:
         info = sandbox.inspect(old_name)
         saved = replace(wanted, clone=info.clone, workspace=info.workspace or wanted.workspace, mixins=())
-    workload.write(config, cwd)
-    plan = replace(wanted, name=new_sandbox, clone=saved.clone, workspace=saved.workspace)
+    workload.write(new_config, cwd)
+    plan = replace(wanted, clone=saved.clone, workspace=saved.workspace)
 
     console.step(f"Building '{new_sandbox}' beside '{old_name}' ({config.auth_mode} logins); '{old_name}' is left untouched")
     console.info(f"   kits: {' '.join(plan.mixin_names()) or '(none)'}")
@@ -292,7 +295,7 @@ def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = T
     sandbox.stop(old_name)
     tar = staging / "snapshot.tar"
     rolled = staging / "snapshot-agent.tar"
-    tag = f"{new_name}:{RECREATE_TAG_PREFIX}{stamp}"
+    tag = f"{new_sandbox}:{RECREATE_TAG_PREFIX}{stamp}"
     export_tag = f"{old_name}:{RECREATE_TAG_PREFIX}{stamp}-export"
     console.step(f"Snapshotting '{old_name}' and retagging it as '{tag}'...")
     # save_template needs a tag of its own to also write the tar; the old box is kept, so that
@@ -313,7 +316,7 @@ def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = T
     # is redundant and removed. On failure it is kept so the create can be retried from it.
     # The snapshot already carries everything setup_scripts produced; create from it with a
     # workload that has no install hook (re-running it as the converted agent user would fail).
-    create_plan = replace(plan, workload=_snapshot_workload(config, cwd, staging))
+    create_plan = replace(plan, workload=_snapshot_workload(new_config, cwd, staging))
     try:
         sandbox.create_from_template(create_plan, tag)
     except Exception:
@@ -347,12 +350,16 @@ def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = T
         staging.parent.rmdir()
     except OSError:
         pass
+    # The new sandbox holds everything: agy.yaml now points at it. (The old one is still there.)
+    if config_path:
+        write_identity(new_config, config_path)
+        console.step(f"{config_path} now points at version {new_config.sandbox_version} ('{new_sandbox}').")
 
     # 5. Verify nothing was lost: compare a full file listing of the old box against the new one.
     new_text = _inventory(new_sandbox, extra_paths=kits.volume_paths(plan.mixins))
     moved_home = ("/root", "/home/agent") if convert else None
     diff = inventory.compare(old_text, new_text, moved_home=moved_home)
-    report_path = paths.state_dir() / f"recreate-{new_name}-{stamp}.txt"
+    report_path = paths.state_dir() / f"recreate-{new_sandbox}-{stamp}.txt"
     _write_report(report_path, old_name, new_sandbox, diff, report, convert)
     for line in inventory.render(diff):
         (console.warn if not diff.clean else console.info)("   " + line)
@@ -362,7 +369,7 @@ def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = T
     console.info(f"   full comparison written to {report_path}")
     console.step(f"Done. '{new_sandbox}' is ready and '{old_name}' is untouched. "
                  f"When you are satisfied, remove the old one with 'sbx rm {old_name}'.")
-    return _finish(config, plan, attach)
+    return _finish(new_config, plan, attach)
 
 
 def _write_report(path: Path, old_name: str, new_name: str, diff, move_report: List[str], converted: bool) -> None:
@@ -371,7 +378,7 @@ def _write_report(path: Path, old_name: str, new_name: str, diff, move_report: L
     relinked = sorted({ln[7:] for ln in move_report if ln.startswith("RELINK ")})
     fixvenv = sorted({ln[8:] for ln in move_report if ln.startswith("FIXVENV ")})
     refs = sorted({ln[4:] for ln in move_report if ln.startswith("REF ")})
-    lines = [f"recreate --as report: {old_name} -> {new_name}", ""]
+    lines = [f"recreate --next report: {old_name} -> {new_name}", ""]
     lines.append("Session user converted from root to agent." if converted else "Old sandbox already ran as agent.")
     if converted:
         lines.append("The old root home was moved into /home/agent.")

@@ -267,14 +267,14 @@ class TestRecreate(UpgradeBase):
         self.assertTrue(messages_containing(self.out, "was not fully restored"))
         self.assertTrue(messages_containing(self.out, "then: sbx cp "))
 
-    def test_a_root_box_is_refused_in_place_and_pointed_at_recreate_as(self):
+    def test_a_root_box_is_refused_in_place_and_pointed_at_recreate_next(self):
         self.save(config())
         with patch(SBX + "exec_script") as ex, patch(SBX + "stop") as stop, patch(SBX + "remove") as remove:
             ex.return_value.stdout = "root\n"
             with self.assertRaises(AgyError) as ctx:
                 upgrade.recreate(config(), Path(self.cwd.name))
         self.assertIn("starts its sessions as 'root'", str(ctx.exception))
-        self.assertIn("recreate --as demo-v2", ctx.exception.hint)
+        self.assertIn("recreate --next", ctx.exception.hint)
         stop.assert_not_called()
         remove.assert_not_called()   # nothing destructive happened
 
@@ -285,7 +285,7 @@ class TestRecreate(UpgradeBase):
             with self.assertRaises(AgyError) as ctx:
                 upgrade.recreate(config(), Path(self.cwd.name))
         self.assertIn("'builder'", str(ctx.exception))
-        self.assertIsNone(ctx.exception.hint)   # --as only converts root, so it is not offered
+        self.assertIsNone(ctx.exception.hint)   # --next only converts root, so it is not offered
         remove.assert_not_called()
 
     def test_without_saved_plan_falls_back_to_inspect(self):
@@ -297,7 +297,10 @@ class TestRecreate(UpgradeBase):
         self.assertTrue(messages_containing(self.out, "no saved plan"))
 
 
-class TestRecreateAs(UpgradeBase):
+NEW = "agy-sandbox-demo-aaaaaaaaaaaaaaaaaaaa-v2"      # the next version of a pre-identity 'demo'
+
+
+class TestRecreateNext(UpgradeBase):
     def _exec(self, name, script, user=None):
         import subprocess
         if "find / -xdev" in script:              # an inventory listing
@@ -309,13 +312,15 @@ class TestRecreateAs(UpgradeBase):
             out = ""
         return subprocess.CompletedProcess(args=[name], returncode=0, stdout=out, stderr="")
 
-    def run_as(self, cfg, *, new="demo-v2", old_user="root", exists_new=False):
+    def run_next(self, cfg, *, old_user="root", exists_new=False, config_path=None, fail_copy=False):
         self.save(config(clone=True))
         from agy_sandbox.snapshot import SnapshotInfo as SI
         patches = {
-            "exists": patch(SBX + "exists", side_effect=lambda n: n == "agy-sandbox-demo" or (exists_new and n == f"agy-sandbox-{new}")),
+            "id": patch("agy_sandbox.config.new_sandbox_id", return_value="a" * 32),
+            "exists": patch(SBX + "exists", side_effect=lambda n: n == "agy-sandbox-demo" or (exists_new and n == NEW)),
             "exec_script": patch(SBX + "exec_script", side_effect=self._exec),
-            "copy_from": patch(SBX + "copy_from"), "copy_to": patch(SBX + "copy_to"), "stop": patch(SBX + "stop"),
+            "copy_from": patch(SBX + "copy_from"), "stop": patch(SBX + "stop"),
+            "copy_to": patch(SBX + "copy_to", side_effect=SandboxError("cp failed") if fail_copy else None),
             "save_template": patch(SBX + "save_template"), "load_template": patch(SBX + "load_template"),
             "remove_template": patch(SBX + "remove_template"),
             "create_from_template": patch(SBX + "create_from_template"), "remove": patch(SBX + "remove"),
@@ -324,31 +329,58 @@ class TestRecreateAs(UpgradeBase):
         }
         started = {k: p.start() for k, p in patches.items()}
         try:
-            code = upgrade.recreate_as(cfg, Path(self.cwd.name), new_name=new)
+            code = upgrade.recreate_next(cfg, Path(self.cwd.name), config_path=config_path)
         finally:
             for p in patches.values():
                 p.stop()
         return code, started
 
     def test_builds_new_box_converts_user_and_never_removes_the_old(self):
-        code, m = self.run_as(config(clone=True))
+        code, m = self.run_next(config(clone=True))
         self.assertEqual(code, 0)
         m["remove"].assert_not_called()                      # the old sandbox is left in place
-        self.assertEqual(m["create_from_template"].call_args[0][0].name, "agy-sandbox-demo-v2")
+        self.assertEqual(m["create_from_template"].call_args[0][0].name, NEW)
         m["load_template"].assert_called_once()
         self.assertEqual(m["rw"].call_args.kwargs["user"], "agent")   # root -> agent on the snapshot
-        self.assertIsNotNone(compose.load_plan("agy-sandbox-demo-v2"))
+        self.assertIsNotNone(compose.load_plan(NEW))
         self.assertIsNotNone(compose.load_plan("agy-sandbox-demo"))    # old plan still there
         self.assertTrue(messages_containing(self.out, "is left untouched"))
         self.assertTrue(messages_containing(self.out, "start as 'agent'"))
 
+    def test_points_the_config_file_at_the_new_version_only_once_the_data_is_in(self):
+        path = Path(self.cwd.name) / "agy.yaml"
+        path.write_text("project_name: demo   # the box\nclone: true\n")
+        code, m = self.run_next(config(clone=True), config_path=str(path))
+        self.assertEqual(code, 0)
+        self.assertEqual(path.read_text(), "project_name: demo   # the box\nsandbox_id: " + "a" * 32 + "\nsandbox_version: 2\nclone: true\n")
+        self.assertTrue(messages_containing(self.out, "now points at version 2"))
+        # the write comes after the migration: a failed migration leaves the file untouched
+        path.write_text("project_name: demo\n")
+        with self.assertRaises(SandboxError):
+            self.run_next(config(clone=True), config_path=str(path), fail_copy=True)
+        self.assertEqual(path.read_text(), "project_name: demo\n")
+
+    def test_a_versioned_project_builds_version_plus_one(self):
+        cfg = config(clone=True, sandbox_id="b" * 32, sandbox_version=4)
+        self.save(cfg)
+        current = cfg.sandbox_name
+        with patch(SBX + "exists", side_effect=lambda n: n == current) as _, \
+             patch(SBX + "exec_script", side_effect=self._exec), patch(SBX + "copy_from"), patch(SBX + "copy_to"), \
+             patch(SBX + "stop"), patch(SBX + "save_template"), patch(SBX + "load_template"), patch(SBX + "remove_template"), \
+             patch(SBX + "create_from_template") as create, patch(SBX + "remove"), \
+             patch("agy_sandbox.snapshot.inspect", return_value=__import__("agy_sandbox.snapshot", fromlist=["SnapshotInfo"]).SnapshotInfo(user="agent", ref="x:y", layers=3)), \
+             patch("agy_sandbox.snapshot.rewrite", return_value=__import__("agy_sandbox.snapshot", fromlist=["SnapshotInfo"]).SnapshotInfo(user="agent", ref="x:y", layers=3)):
+            upgrade.recreate_next(cfg, Path(self.cwd.name))
+        self.assertEqual(create.call_args[0][0].name, current[:-1] + "5")
+
     def test_already_agent_box_is_copied_without_a_user_flip(self):
-        code, m = self.run_as(config(clone=True), old_user="agent")
+        code, m = self.run_next(config(clone=True), old_user="agent")
         self.assertEqual(code, 0)
         self.assertIsNone(m["rw"].call_args.kwargs["user"])   # retag only, no user change
         self.assertFalse(messages_containing(self.out, "start as 'agent'"))
 
-    def test_refuses_when_the_target_name_is_taken(self):
+    def test_refuses_when_the_next_version_already_exists(self):
         with self.assertRaises(AgyError) as ctx:
-            self.run_as(config(clone=True), exists_new=True)
+            self.run_next(config(clone=True), exists_new=True)
         self.assertIn("already exists", str(ctx.exception))
+        self.assertIn("agy-sandbox versions", ctx.exception.hint)

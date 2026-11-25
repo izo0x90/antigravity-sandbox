@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from . import __version__, console, engine, upgrade
+from . import __version__, console, engine, identity, sandbox, upgrade
 from .agents import AGENT_AGY, AGENT_SPECS, discover_available_agent
 from .cli_helpers import (
     SmartArgumentParser,
@@ -73,6 +73,12 @@ def confirm_destroy(config: AgyConfig, assume_yes: bool = False) -> None:
         confirm = "n"
     if confirm.strip().lower() != "y":
         raise AgyError("Operation aborted. Your uncommitted/unpushed code has been protected! Stay safe, homie!")
+
+
+def pin_version(config: AgyConfig, args: argparse.Namespace) -> AgyConfig:
+    """`--version N`: act on that existing version instead of the one agy.yaml points at."""
+    version = getattr(args, "sandbox_version", None)
+    return config if version is None else identity.pin(config, version)
 
 
 def apply_session_flags(config: AgyConfig, args: argparse.Namespace) -> None:
@@ -184,34 +190,55 @@ def auto_init_command(args: argparse.Namespace) -> None:
 
 
 def up_command(args: argparse.Namespace) -> None:
-    config = load_or_fail()
+    config = pin_version(load_or_fail(), args)
     if args.rebuild:
         confirm_destroy(config, args.yes)
     apply_session_flags(config, args)
-    exit_with(engine.up(config, rebuild=args.rebuild, cwd=Path.cwd(), attach=not args.no_attach))
+    exit_with(engine.up(config, rebuild=args.rebuild, cwd=Path.cwd(), attach=not args.no_attach,
+                        config_path=DEFAULT_CONFIG_FILE))
 
 
 def upgrade_command(args: argparse.Namespace) -> None:
-    config = load_or_fail()
+    config = pin_version(load_or_fail(), args)
     apply_session_flags(config, args)
     exit_with(upgrade.upgrade(config, cwd=Path.cwd(), attach=not args.no_attach))
 
 
 def recreate_command(args: argparse.Namespace) -> None:
-    config = load_or_fail()
+    config = pin_version(load_or_fail(), args)
     apply_session_flags(config, args)
-    if args.as_name:
-        # Side by side: the old sandbox is read, never removed, so there is nothing to confirm.
-        exit_with(upgrade.recreate_as(config, cwd=Path.cwd(), new_name=args.as_name, attach=not args.no_attach))
+    if args.next:
+        # Side by side: the current sandbox is read, never removed, so there is nothing to confirm.
+        exit_with(upgrade.recreate_next(config, cwd=Path.cwd(), attach=not args.no_attach, config_path=DEFAULT_CONFIG_FILE))
         return
     confirm_destroy(config, args.yes)   # in-place recreate still stops and removes the sandbox
     exit_with(upgrade.recreate(config, cwd=Path.cwd(), attach=not args.no_attach))
 
 
 def down_command(args: argparse.Namespace) -> None:
-    config = load_or_fail()
+    config = pin_version(load_or_fail(), args)
     confirm_destroy(config, args.yes)
     engine.down(config)
+
+
+def versions_command(args: argparse.Namespace) -> None:
+    """Every sandbox this project has: the versions under its id, and a pre-identity one if it is still around."""
+    config = load_or_fail()
+    sandbox.require()
+    found = identity.versions(config)
+    legacy = identity.legacy_sandbox(config)
+    if config.sandbox_id is None:
+        console.info(f"'{config.project_name}' has no sandbox id yet; 'agy-sandbox up' or 'recreate --next' gives it one.")
+    else:
+        console.info(f"Sandbox versions of '{config.project_name}' (id {config.sandbox_id}):")
+    if not found and not legacy:
+        console.info("   no sandbox exists.")
+    for version, row in found:
+        current = "  <- agy.yaml" if version == config.sandbox_version else ""
+        console.info(f"   v{version:<4} {row.get('name', ''):<60} {str(row.get('state') or row.get('status') or ''):<8}{current}")
+    if legacy:
+        current = "  <- agy.yaml" if config.sandbox_id is None else f"  pre-identity; remove with 'sbx rm {legacy}' when done"
+        console.info(f"   {'pre':<5} {legacy:<60} {'':<8}{current}")
 
 
 def agents_list_command(args: argparse.Namespace) -> None:
@@ -269,6 +296,11 @@ def _add_session_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-attach", action="store_true", help="Do the work and return instead of attaching to the sandbox (for scripts)")
 
 
+def _add_version_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--version", dest="sandbox_version", type=int, metavar="N",
+                        help="Act on version N of this project's sandbox instead of the one agy.yaml points at (see 'versions')")
+
+
 def _add_yes_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation when the guardian finds unsaved work (for scripts)")
 
@@ -290,24 +322,31 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("up", help="Create or resume the sandbox and attach to it")
     p.add_argument("--rebuild", action="store_true", help="Recreate the sandbox from scratch (see 'recreate' to keep its contents)")
     _add_session_options(p)
+    _add_version_option(p)
     _add_yes_option(p)
     p.set_defaults(func=up_command)
 
     p = sub.add_parser("upgrade", help="Apply agy.yaml additions (kits, env, ports, host browser) to the existing sandbox in place")
     _add_session_options(p)
+    _add_version_option(p)
     p.set_defaults(func=upgrade_command)
 
     p = sub.add_parser("recreate", help="Rebuild the sandbox from a snapshot of itself so removed kits, changed kit arguments or a changed login mode apply without losing its contents")
-    p.add_argument("--as", dest="as_name", metavar="NAME",
-                   help="Build a new sandbox called NAME beside this one instead of replacing it; the original is left untouched. "
-                        "A sandbox built by agy-sandbox 0.5 (root sessions) is converted to the agent user in the copy.")
+    p.add_argument("--next", action="store_true",
+                   help="Build the next version of the sandbox beside this one instead of replacing it, and point agy.yaml at it; "
+                        "the current sandbox is left untouched. A sandbox built by agy-sandbox 0.5 (root sessions) is converted "
+                        "to the agent user in the copy.")
     _add_session_options(p)
+    _add_version_option(p)
     _add_yes_option(p)
     p.set_defaults(func=recreate_command)
 
     p = sub.add_parser("down", help="Stop and remove the sandbox")
+    _add_version_option(p)
     _add_yes_option(p)
     p.set_defaults(func=down_command)
+
+    sub.add_parser("versions", help="List this project's sandbox versions and which one agy.yaml points at").set_defaults(func=versions_command)
 
     agents = sub.add_parser("agents", help="Agent harnesses").add_subparsers(dest="subcommand", required=True)
     agents.add_parser("list", help="List agent harnesses").set_defaults(func=agents_list_command)

@@ -4,11 +4,11 @@ workload (the generated kit), compose (the plan), sandbox (sbx), guardian and
 host_browser.
 """
 from pathlib import Path
-from typing import Set
+from typing import Optional, Set
 
 from . import compose, console, sandbox, workload
 from .compose import SandboxPlan
-from .config import AgyConfig
+from .config import AgyConfig, new_sandbox_id, write_identity
 from .constants import AUTH_MODE_PROXY_MANAGED, KIT_CHROME_HOST
 from .host_browser import HostBrowser
 
@@ -96,8 +96,13 @@ def create(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
     return _session(plan.name, plan.env, attach)
 
 
-def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path, attach: bool = True) -> int:
-    """Creates or resumes the sandbox and attaches. Returns the exit code of the attached session (0 without attach)."""
+def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path, attach: bool = True,
+       config_path: Optional[str] = None) -> int:
+    """
+    Creates or resumes the sandbox and attaches. Returns the exit code of the attached session
+    (0 without attach). A project without a sandbox id keeps using its pre-identity sandbox while
+    that exists; the moment one has to be created it is given an id, recorded in `config_path`.
+    """
     compose.validate_host_browser(config)
     sandbox.require()
     name = config.sandbox_name
@@ -107,6 +112,12 @@ def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path, attach: bool = Tr
         sandbox.remove(name)
         compose.delete_plan(name)
         workload.delete(name)
+    if config.sandbox_id is None:
+        config.sandbox_id = new_sandbox_id()
+        config.sandbox_version = 1
+        if config_path:
+            write_identity(config, config_path)
+            console.step(f"Gave this project a sandbox id (recorded in {config_path}); its sandboxes are named '{config.sandbox_name}' and up.")
     return create(config, cwd, attach=attach)
 
 

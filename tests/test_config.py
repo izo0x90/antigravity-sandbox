@@ -12,16 +12,52 @@ from agy_sandbox.config import (
     migration_warning,
     sandbox_name,
     save_config,
+    write_identity,
 )
 from agy_sandbox.constants import DEFAULT_BASE_IMAGE
 from agy_sandbox.errors import ConfigError
 
 
+ID = "0123456789abcdef0123456789abcdef"
+
+
 class TestNaming(unittest.TestCase):
-    def test_sandbox_name_slugifies_and_appends_profile(self):
+    def test_pre_identity_name_slugifies_and_appends_profile(self):
         self.assertEqual(sandbox_name("My App"), "agy-sandbox-my-app")
         self.assertEqual(sandbox_name("my_app", "staging"), "agy-sandbox-my-app--staging")
         self.assertEqual(AgyConfig(project_name="demo").sandbox_name, "agy-sandbox-demo")
+        self.assertEqual(AgyConfig(project_name="demo", sandbox_id=ID).legacy_sandbox_name, "agy-sandbox-demo")
+
+    def test_identified_name_carries_20_hex_of_the_id_and_the_version(self):
+        self.assertEqual(sandbox_name("My App", sandbox_id=ID, version=1), "agy-sandbox-my-app-0123456789abcdef0123-v1")
+        self.assertEqual(sandbox_name("my_app", "staging", ID, 12), "agy-sandbox-my-app--staging-0123456789abcdef0123-v12")
+        self.assertEqual(AgyConfig(project_name="demo", sandbox_id=ID, sandbox_version=3).sandbox_name,
+                         "agy-sandbox-demo-0123456789abcdef0123-v3")
+
+    def test_two_projects_with_the_same_slug_get_different_names(self):
+        a = sandbox_name("foo--bar", sandbox_id="a" * 32)
+        b = sandbox_name("foo-bar", sandbox_id="b" * 32)
+        self.assertEqual(sandbox_name("foo--bar"), sandbox_name("foo-bar"))   # the pre-identity collision...
+        self.assertNotEqual(a, b)                                            # ...the identity removes
+
+    def test_long_labels_are_cut_so_the_name_fits_sbx_and_stays_stable_across_versions(self):
+        long = "antigravity-architecture-registry-with-a-very-long-name"
+        for version in (1, 9, 10, 999):
+            name = sandbox_name(long, sandbox_id=ID, version=version)
+            self.assertLessEqual(len(name), 63)
+            self.assertTrue(name.endswith(f"-0123456789abcdef0123-v{version}"))
+            self.assertEqual(name.rsplit("-v", 1)[0], sandbox_name(long, sandbox_id=ID, version=1).rsplit("-v", 1)[0])
+        self.assertFalse(sandbox_name("abcdefghijklmnopqrstuvwx-", sandbox_id=ID).split("-0123")[0].endswith("-"))
+        with self.assertRaises(ConfigError):
+            sandbox_name("x", sandbox_id=ID, version=1000)
+
+    def test_next_version_gives_a_pre_identity_project_an_id_and_version_2(self):
+        nxt = AgyConfig(project_name="demo").next_version()
+        self.assertEqual(len(nxt.sandbox_id), 32)
+        self.assertEqual(nxt.sandbox_version, 2)
+        again = nxt.next_version()
+        self.assertEqual((again.sandbox_id, again.sandbox_version), (nxt.sandbox_id, 3))
+        self.assertEqual(nxt.with_version(1).sandbox_name, nxt.sandbox_name[:-1] + "1")
 
 
 class TestFromDict(unittest.TestCase):
@@ -90,6 +126,45 @@ class TestLegacyLayout(unittest.TestCase):
 
     def test_current_file_has_no_warning(self):
         self.assertIsNone(migration_warning(AgyConfig()))
+
+
+class TestIdentityInFile(unittest.TestCase):
+    def test_identity_fields_round_trip_and_are_omitted_when_unset(self):
+        self.assertNotIn("sandbox_id", AgyConfig(project_name="demo").to_dict())
+        cfg = AgyConfig.from_dict({"project_name": "demo", "sandbox_id": ID, "sandbox_version": 4})
+        self.assertEqual((cfg.sandbox_id, cfg.sandbox_version), (ID, 4))
+        self.assertEqual(list(cfg.to_dict())[:4], ["profile", "project_name", "sandbox_id", "sandbox_version"])
+        self.assertEqual(AgyConfig.from_dict({"project_name": "demo", "sandbox_id": ID}).sandbox_version, 1)
+
+    def test_a_hand_edited_identity_is_refused(self):
+        for bad in ({"sandbox_id": "nope"}, {"sandbox_id": ID, "sandbox_version": 0}, {"sandbox_id": ID, "sandbox_version": "two"}):
+            with self.assertRaises(ConfigError):
+                AgyConfig.from_dict({"project_name": "demo", **bad})
+
+    def test_write_identity_edits_only_its_two_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "agy.yaml")
+            with open(path, "w") as f:
+                f.write("# hand-written, with comments\nprofile: default\nproject_name: demo  # the name\n"
+                        "kits:\n  - omp   # sandbox_id: not this one\nenv: [A=1]\n")
+            write_identity(AgyConfig(project_name="demo", sandbox_id=ID, sandbox_version=2), path)
+            with open(path) as f:
+                text = f.read()
+            self.assertEqual(text, "# hand-written, with comments\nprofile: default\nproject_name: demo  # the name\n"
+                                   f"sandbox_id: {ID}\nsandbox_version: 2\n"
+                                   "kits:\n  - omp   # sandbox_id: not this one\nenv: [A=1]\n")
+            write_identity(AgyConfig(project_name="demo", sandbox_id=ID, sandbox_version=3), path)   # bump in place
+            with open(path) as f:
+                self.assertEqual(f.read().count("sandbox_version"), 1)
+            self.assertEqual(load_config(path).sandbox_version, 3)
+
+    def test_write_identity_appends_when_there_is_no_project_name_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "agy.yaml")
+            with open(path, "w") as f:
+                f.write("agent: claude")          # no trailing newline either
+            write_identity(AgyConfig(project_name="demo", sandbox_id=ID), path)
+            self.assertEqual((load_config(path).sandbox_id, load_config(path).agent), (ID, "claude"))
 
 
 class TestFiles(unittest.TestCase):

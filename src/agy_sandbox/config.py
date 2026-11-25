@@ -3,6 +3,8 @@ agy.yaml: one flat document describing a sandbox.
 
     profile: default
     project_name: my_app
+    sandbox_id: 3f9a2c1e...    # written by agy-sandbox on the first `up`; identifies this project's sandboxes
+    sandbox_version: 1         # bumped by `recreate --next`; which of them agy.yaml points at
     agent: claude                 # primary agent; its kit is always attached
     kits: [claude, opencode]      # agent kits and mixin kits: bundled names, local dirs or remote refs
     auth_mode: sandbox-local      # or proxy-managed
@@ -19,9 +21,11 @@ Pre-0.5 files nested most of this under `sbx:` and carried a Docker-only
 runtime; `AgyConfig.from_dict` still reads them and records what changed in
 `migration_notes` so the CLI can tell the user how to update.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
+import re
 from typing import Dict, List, Optional, Tuple
+import uuid
 
 import yaml
 
@@ -41,12 +45,35 @@ from .constants import (
 from .errors import ConfigError
 
 
-def sandbox_name(project_name: str, profile: str = "default") -> str:
+SANDBOX_NAME_PREFIX = "agy-sandbox-"
+SANDBOX_ID_CHARS = 20          # of the 32-hex id, in the name: 80 bits, far beyond any one machine's sandboxes
+_SBX_NAME_MAX = 63             # sbx's limit on a sandbox name
+_VERSION_WIDTH = 3             # room reserved for the version digits, so the label never shifts between versions
+_SANDBOX_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def new_sandbox_id() -> str:
+    """A fresh identity for a project's sandboxes: a random UUID4, as 32 hex characters."""
+    return uuid.uuid4().hex
+
+
+def sandbox_name(project_name: str, profile: str = "default", sandbox_id: Optional[str] = None, version: int = 1) -> str:
+    """
+    With an identity: agy-sandbox-<label>-<20 hex of the id>-v<version>. The label (project
+    slug, plus --<profile> when not default) is only there so `sbx ls` reads well; the id is
+    what makes the name unique, so the label is cut to fit sbx's 63-character limit.
+    Without one: agy-sandbox-<label>, the name every sandbox had before identities existed.
+    """
     project = slugify_project_name(project_name)
     prof = slugify_project_name(profile)
-    if prof == "default":
-        return f"agy-sandbox-{project}"
-    return f"agy-sandbox-{project}--{prof}"
+    label = project if prof == "default" else f"{project}--{prof}"
+    if sandbox_id is None:
+        return f"{SANDBOX_NAME_PREFIX}{label}"
+    if version >= 10 ** _VERSION_WIDTH:
+        raise ConfigError(f"sandbox_version must be below {10 ** _VERSION_WIDTH} (got {version}).")
+    tail = f"-{sandbox_id[:SANDBOX_ID_CHARS]}-v"
+    room = _SBX_NAME_MAX - len(SANDBOX_NAME_PREFIX) - len(tail) - _VERSION_WIDTH
+    return f"{SANDBOX_NAME_PREFIX}{label[:room].rstrip('-')}{tail}{version}"
 
 
 @dataclass
@@ -72,6 +99,8 @@ class HostBrowserConfig:
 class AgyConfig:
     profile: str = "default"
     project_name: str = "default_project"
+    sandbox_id: Optional[str] = None      # None until the first sandbox is created (or for a pre-identity file)
+    sandbox_version: int = 1
     agent: str = AGENT_AGY
     kits: List[str] = field(default_factory=list)
     auth_mode: str = AUTH_MODE_SANDBOX_LOCAL
@@ -88,11 +117,25 @@ class AgyConfig:
 
     @property
     def sandbox_name(self) -> str:
+        """The sandbox agy.yaml points at: the current version under this identity, or the pre-identity name."""
+        return sandbox_name(self.project_name, self.profile, self.sandbox_id, self.sandbox_version)
+
+    @property
+    def legacy_sandbox_name(self) -> str:
+        """The name this project's sandbox had before identities (agy-sandbox 0.5 and early 0.6)."""
         return sandbox_name(self.project_name, self.profile)
 
-    def sandbox_name_for(self, project_name: str) -> str:
-        """The sandbox name a given project name would produce under this profile."""
-        return sandbox_name(project_name, self.profile)
+    def with_version(self, version: int) -> "AgyConfig":
+        return replace(self, sandbox_version=version)
+
+    def next_version(self) -> "AgyConfig":
+        """
+        A copy pointing at the version after this one. A file without an identity gets one
+        here, and its next version is 2: the pre-identity sandbox it has today counts as the first.
+        """
+        if self.sandbox_id is None:
+            return replace(self, sandbox_id=new_sandbox_id(), sandbox_version=2)
+        return replace(self, sandbox_version=self.sandbox_version + 1)
 
     @property
     def agent_spec(self) -> AgentSpec:
@@ -159,10 +202,26 @@ class AgyConfig:
         if agent not in AGENT_SPECS:
             raise ConfigError(f"Unknown agent '{agent}'.", hint=f"Available agents: {', '.join(AGENT_SPECS)}")
 
+        sandbox_id = data.get("sandbox_id")
+        if sandbox_id is not None:
+            sandbox_id = str(sandbox_id)
+            if not _SANDBOX_ID.fullmatch(sandbox_id):
+                raise ConfigError("sandbox_id is not one agy-sandbox wrote (32 hex characters).",
+                                  hint="It identifies this project's sandboxes; restore it from git rather than editing it.")
+        raw_version = data.get("sandbox_version")
+        try:
+            sandbox_version = 1 if raw_version is None else int(raw_version)
+        except (TypeError, ValueError):
+            raise ConfigError(f"sandbox_version must be a whole number (got {data.get('sandbox_version')!r}).")
+        if sandbox_version < 1:
+            raise ConfigError(f"sandbox_version must be 1 or more (got {sandbox_version}).")
+
         kit_args = data.get("kit_args") or {}
         return cls(
             profile=data.get("profile") or "default",
             project_name=data.get("project_name") or "default_project",
+            sandbox_id=sandbox_id,
+            sandbox_version=sandbox_version,
             agent=agent,
             kits=[str(k) for k in (data.get("kits") or []) if k],
             auth_mode=raw_auth,
@@ -181,11 +240,16 @@ class AgyConfig:
         data: dict = {
             "profile": self.profile,
             "project_name": self.project_name,
+        }
+        if self.sandbox_id is not None:
+            data["sandbox_id"] = self.sandbox_id
+            data["sandbox_version"] = self.sandbox_version
+        data.update({
             "agent": self.agent,
             "kits": list(self.kits),
             "auth_mode": self.auth_mode,
             "clone": self.clone,
-        }
+        })
         # Optional sections are written only when set, to keep generated files small
         if self.ports:
             data["ports"] = list(self.ports)
@@ -220,6 +284,39 @@ def load_config(path: str = DEFAULT_CONFIG_FILE) -> AgyConfig:
 def save_config(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> None:
     with open(path, "w", encoding="utf-8") as f:
         yaml.dump(config.to_dict(), f, sort_keys=False)
+
+
+IDENTITY_KEYS = ("sandbox_id", "sandbox_version")
+
+
+def write_identity(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> None:
+    """
+    Records the config's sandbox_id and sandbox_version in the file by rewriting only those
+    two top-level lines (replacing them where present, else inserting them after project_name),
+    so the person's comments and layout survive. The only writer of these fields.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines(keepends=True)
+    wanted = {"sandbox_id": config.sandbox_id, "sandbox_version": str(config.sandbox_version)}
+    out: List[str] = []
+    seen = set()
+    for line in lines:
+        key = line.split(":", 1)[0] if ":" in line else ""
+        if key in wanted and key not in seen:          # a top-level key starts at column 0
+            out.append(f"{key}: {wanted[key]}\n")
+            seen.add(key)
+        else:
+            out.append(line)
+    missing = [f"{k}: {wanted[k]}\n" for k in IDENTITY_KEYS if k not in seen]
+    if missing and not out:
+        out = missing
+    elif missing:
+        anchor = next((i for i, ln in enumerate(out) if ln.startswith("project_name:")), len(out) - 1)
+        if not out[anchor].endswith("\n"):
+            out[anchor] += "\n"
+        out[anchor + 1:anchor + 1] = missing
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(out))
 
 
 def migration_warning(config: AgyConfig, path: str = DEFAULT_CONFIG_FILE) -> Optional[str]:

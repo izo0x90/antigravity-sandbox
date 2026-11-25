@@ -145,6 +145,52 @@ class TestLifecycleCommands(InTempDir):
         rc.assert_called_once()
         guard.assert_called_once()
 
+    def test_recreate_next_skips_the_guardian_and_hands_over_the_config_path(self):
+        with patch("agy_sandbox.cli.upgrade.recreate_next", return_value=0) as nxt, \
+             patch("agy_sandbox.cli.check_for_unsaved_sandbox_work") as guard:
+            self.assertEqual(main(["recreate", "--next", "--no-attach"]), 0)
+        guard.assert_not_called()                       # nothing is destroyed, nothing to confirm
+        self.assertEqual(nxt.call_args.kwargs["config_path"], "agy.yaml")
+        self.assertFalse(nxt.call_args.kwargs["attach"])
+
+    def test_version_flag_pins_an_existing_version_or_says_which_exist(self):
+        ident = "c" * 32
+        with open("agy.yaml", "a") as f:
+            f.write(f"sandbox_id: {ident}\nsandbox_version: 2\n")
+        with patch("agy_sandbox.sandbox.exists", return_value=True), patch("agy_sandbox.cli.engine.up", return_value=0) as up:
+            self.assertEqual(main(["up", "--version", "1"]), 0)
+        self.assertEqual(up.call_args[0][0].sandbox_version, 1)
+        self.assertTrue(up.call_args[0][0].sandbox_name.endswith("-v1"))
+        v1 = up.call_args[0][0].sandbox_name
+        with patch("agy_sandbox.sandbox.exists", return_value=False), \
+             patch("agy_sandbox.sandbox.list_sandboxes", return_value=[{"name": v1}, {"name": v1[:-1] + "2"}]), \
+             patch("agy_sandbox.cli.engine.down") as down, patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(main(["down", "--version", "3"]), 1)
+        down.assert_not_called()
+        self.assertIn("Version 3 of", err.getvalue())
+        self.assertIn("Existing versions: 1, 2", err.getvalue())
+
+    def test_version_flag_on_a_pre_identity_project_is_an_error(self):
+        with patch("agy_sandbox.cli.engine.up") as up, patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(main(["up", "--version", "1"]), 1)
+        up.assert_not_called()
+        self.assertIn("no versioned sandboxes yet", err.getvalue())
+
+    def test_versions_lists_each_version_marks_the_current_one_and_the_legacy_box(self):
+        ident = "d" * 32
+        with open("agy.yaml", "a") as f:
+            f.write(f"sandbox_id: {ident}\nsandbox_version: 2\n")
+        cfg = load_config()
+        names = [cfg.with_version(1).sandbox_name, cfg.sandbox_name]
+        with patch("agy_sandbox.sandbox.require"), patch("agy_sandbox.sandbox.exists", return_value=True), \
+             patch("agy_sandbox.sandbox.list_sandboxes", return_value=[{"name": n, "state": "stopped"} for n in names]), \
+             captured_console() as out:
+            self.assertEqual(main(["versions"]), 0)
+        self.assertTrue(messages_containing(out, f"id {ident}"))
+        self.assertEqual(len(messages_containing(out, "<- agy.yaml")), 1)
+        self.assertTrue(messages_containing(out, "v2 "))
+        self.assertTrue(messages_containing(out, "pre-identity; remove with 'sbx rm agy-sandbox-"))
+
     def test_upgrade_refusal_lists_reasons_and_hint(self):
         with patch("agy_sandbox.cli.upgrade.upgrade", side_effect=UpgradeRefused(["kit removed: omp"], hint="Run 'agy-sandbox recreate'")), \
              patch("sys.stderr", new_callable=io.StringIO) as err:
