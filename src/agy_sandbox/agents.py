@@ -30,7 +30,10 @@ class AgentSpec:
     secret_services: Tuple[str, ...] = ()
     # Files that hint a repo was set up for this agent
     signature_files: Tuple[str, ...] = ()
-    # Login/session files (relative to the agent's home) the guardian protects
+    # Login/session files (relative to the agent's home) the guardian protects. Only
+    # paths an agent writes when it is signed in or has been used: sbx and the kits
+    # pre-create ~/.gemini, ~/.omp and ~/.claude.json in every sandbox, so those
+    # would flag a fresh sandbox.
     session_files: Tuple[str, ...] = ()
     # Whether kits/<identifier> exists; shell is the one agent without a kit
     has_kit: bool = True
@@ -49,7 +52,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         read_only_args=("--add-dir", "{cwd}", "--mode", "plan", "--print", "{prompt}"),
         secret_services=("google", "antigravity"),
         signature_files=("antigravity.yaml",),
-        session_files=(".gemini",),
+        session_files=(".gemini/antigravity-cli",),   # agy keeps its token in the keyring; this appears once agy has run
     ),
     AGENT_CLAUDE: AgentSpec(
         identifier=AGENT_CLAUDE,
@@ -58,7 +61,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         read_only_args=("-p", "{prompt}"),
         secret_services=("anthropic",),
         signature_files=("CLAUDE.md", ".claude"),
-        session_files=(".claude.json", ".claude/.credentials.json"),
+        session_files=(".claude/.credentials.json",),
     ),
     AGENT_OPENCODE: AgentSpec(
         identifier=AGENT_OPENCODE,
@@ -83,7 +86,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         display_name="Oh My Pi Harness",
         cli_binary="omp",
         read_only_args=("-p", "{prompt}", "--tools=read,grep,glob"),
-        session_files=(".omp",),
+        session_files=(".omp/auth.json", ".omp/agent/auth.json"),   # upstream pi stores tokens in <dir>/agent/auth.json
     ),
     AGENT_PRIME_AGENT: AgentSpec(
         identifier=AGENT_PRIME_AGENT,
