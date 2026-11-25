@@ -34,7 +34,7 @@ cleanup() {
     sbx template rm -f "$NAME:$tag" >/dev/null 2>&1 || true
   done
   rm -rf "$WORK"
-  if sbx ls 2>/dev/null | grep -q "$NAME"; then echo "!! probe sandbox still present: sbx rm -f $NAME"; else echo "probe sandbox gone"; fi
+  if sbx ls 2>/dev/null | grep -c "$NAME" >/dev/null; then echo "!! probe sandbox still present: sbx rm -f $NAME"; else echo "probe sandbox gone"; fi
   if [ "$STATUS" -eq 0 ]; then echo "LIVE CHECK PASSED"; else echo "LIVE CHECK FAILED (see the last step above)"; fi
 }
 trap cleanup EXIT
@@ -81,7 +81,8 @@ write_config "claude, chrome-devtools" sandbox-local
 
 step "2. up: sbx builds the workload (gate 1), hooks run as agent, no proxy placeholders"
 agy up
-sbx ls | grep -q "$NAME" || fail "sandbox $NAME not listed after up"
+listed() { sbx ls | grep -c "$1" >/dev/null; }   # grep -c reads to EOF, so pipefail stays honest
+listed "$NAME" || fail "sandbox $NAME not listed after up"
 assert_inside "session user is agent"            '[ "$(id -un)" = agent ] && [ "$HOME" = /home/agent ]'
 assert_inside "setup script ran, as agent"       '[ "$(cat /home/agent/setup-marker)" = setup-ran ] && [ "$(cat /home/agent/setup-user)" = agent ]'
 assert_inside "python from the workload build"   'python --version'
@@ -116,7 +117,7 @@ assert_inside "rootfs marker survived recreate"  '[ "$(cat /home/agent/rootfs-ma
 assert_inside "claude volume survived recreate"  '[ "$(cat /home/agent/.claude/projects/marker)" = s ]'
 assert_inside "clone workspace survived"         'git -C "${WORKSPACE_DIR:-$PWD}" log --oneline | grep -q init'
 assert_inside "session user still agent"         '[ "$(id -un)" = agent ]'
-sbx template ls | grep -q "$NAME.*recreate-" || fail "recreate snapshot not kept"
+sbx template ls | grep -c "$NAME.*recreate-" >/dev/null || fail "recreate snapshot not kept"
 
 step "5. recreate to proxy-managed (login mode change): credential kits attached"
 write_config "claude" proxy-managed
@@ -126,6 +127,6 @@ assert_inside "rootfs marker survived again"     '[ "$(cat /home/agent/rootfs-ma
 
 step "6. down removes the sandbox"
 (cd "$WORK/proj" && "$AGY" down -y) || fail "down exited non-zero"
-sbx ls | grep -q "$NAME" && fail "sandbox still present after down"
+if listed "$NAME"; then fail "sandbox still present after down"; fi
 STATUS=0
 echo; echo "all live gates passed${SKIP_IN_PLACE:+ (step 3 skipped)}"
