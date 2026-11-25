@@ -30,6 +30,23 @@ class TestRender(unittest.TestCase):
         desc = workload.render_descriptor(AgyConfig(project_name="demo"))
         self.assertEqual([c["type"] for c in desc["capabilities"]], ["com.docker.sandbox/sbx@1"])
 
+    def test_include_setup_false_drops_the_install_hook(self):
+        cfg = AgyConfig(project_name="demo", setup_scripts=["cargo fetch"])
+        self.assertIn("lifecycle@1", [c["type"] for c in workload.render_descriptor(cfg)["capabilities"]][-1])
+        no_setup = workload.render_descriptor(cfg, include_setup=False)
+        self.assertEqual([c["type"] for c in no_setup["capabilities"]], ["com.docker.sandbox/sbx@1"])
+
+    def test_write_for_snapshot_writes_a_setupless_kit_without_touching_the_normal_one(self):
+        cfg = AgyConfig(project_name="demo", setup_scripts=["cargo fetch"])
+        with tempfile.TemporaryDirectory() as cwd:
+            normal = workload.write(cfg, Path(cwd))
+            dest = Path(cwd) / "provisioned"
+            ref = workload.write_for_snapshot(cfg, Path(cwd), dest)
+            self.assertEqual(ref.dir, str(dest))
+            self.assertNotEqual(ref.fingerprint, normal.fingerprint)   # the install hook is gone
+            self.assertNotIn("cargo fetch", (dest / "workload.yaml").read_text())
+            self.assertIn("cargo fetch", (Path(normal.dir) / "workload.yaml").read_text())   # normal kit untouched
+
     def test_descriptor_text_starts_with_the_syntax_header_and_parses(self):
         text = workload.descriptor_text(AgyConfig(project_name="demo", setup_scripts=["echo hi"]))
         self.assertTrue(text.startswith(KIT_DESCRIPTOR_SYNTAX + "\n"))

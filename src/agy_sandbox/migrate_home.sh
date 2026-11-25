@@ -11,14 +11,21 @@
 # place. Directories are merged entry by entry so volume mountpoints under the
 # destination (e.g. ~/.claude/projects) receive the moved files instead of being hidden.
 # Every line it prints is a record for the migration report:
-#   MOVED <path>        an entry relocated from /root
-#   KEPT  <path>        an existing agent file preserved as <path>.pre-migration
-#   REF   <path>        a moved text file that still mentions /root/
+#   MOVED  <path>       an entry relocated from /root
+#   KEPT   <path>       an existing agent file preserved as <path>.pre-migration
+#   RELINK <path>       a symlink that pointed inside /root, repointed into /home/agent
+#   FIXVENV <path>      a relocated virtualenv file whose /root path was rewritten to /home/agent
+#   REF    <path>       a moved text file that still mentions /root/
 set -eu
-SRC=/root
-DST=/home/agent
+SRC=${MIGRATE_SRC:-/root}
+DST=${MIGRATE_DST:-/home/agent}
+OWNER=${MIGRATE_OWNER:-1000:1000}   # the agent user; overridable only so tests can run off-sandbox
 
 move_entry() {   # move_entry <relative-path>
+  # rel/s/d/name/child are declared local: this function recurses, and without local a
+  # child call would clobber the parent loop's rel and derail the walk (POSIX sh has no
+  # block scope). dash, busybox ash and bash — every /bin/sh these images ship — honour it.
+  local rel s d name child
   rel=$1
   s="$SRC/$rel"
   d="$DST/$rel"
@@ -54,7 +61,40 @@ for entry in "$SRC"/.* "$SRC"/*; do
   move_entry "$name"
 done
 
-chown -R 1000:1000 "$DST"
+# Repoint symlinks whose target was inside the old home: their target has just moved
+# from $SRC to $DST, so an absolute link into $SRC now dangles. A relative link (e.g.
+# one cpython dir to another) moved together with its target and is left alone.
+find "$DST" -type l 2>/dev/null | while IFS= read -r link; do
+  target=$(readlink "$link")
+  case "$target" in
+    "$SRC" | "$SRC"/*)
+      ln -sfn "$DST${target#"$SRC"}" "$link"
+      echo "RELINK ${link#"$DST"/}"
+      ;;
+  esac
+done
+
+# Relocate Python virtualenvs. A venv bakes its own absolute path into pyvenv.cfg, every
+# bin/ entry-point's shebang and the activate scripts, so a moved venv (e.g. a `uv tool`
+# like architecture-registry) points its interpreter back at the now-empty $SRC. Rewrite
+# $SRC -> $DST inside each venv only (a dir with a pyvenv.cfg), where every such reference
+# is machine-generated — never touching session logs, audit trails or other user data.
+find "$DST" -name pyvenv.cfg -type f 2>/dev/null | while IFS= read -r cfg; do
+  venv=$(dirname "$cfg")
+  # The venv's top-level metadata (pyvenv.cfg, uv-receipt.toml, ...) and every bin/ entry
+  # point — but never lib/, where a package's own data may legitimately contain the string.
+  for f in "$venv"/* "$venv"/bin/*; do
+    [ -f "$f" ] || continue
+    grep -IFq -- "$SRC/" "$f" 2>/dev/null || continue
+    tmp="$f.migtmp"
+    if sed "s#$SRC/#$DST/#g" "$f" > "$tmp" && cat "$tmp" > "$f"; then
+      echo "FIXVENV ${f#"$DST"/}"
+    fi
+    rm -f "$tmp"
+  done
+done
+
+chown -R "$OWNER" "$DST"
 
 # Report moved text files that still hard-code /root/, the one way a relocated
 # config can silently break. Caps the scan so a huge cache cannot stall it.

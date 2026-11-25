@@ -26,6 +26,18 @@ from .errors import AgyError, SandboxError, UpgradeRefused
 MIGRATE_HOME_SCRIPT = Path(__file__).resolve().parent / "migrate_home.sh"
 
 
+def _snapshot_workload(config: AgyConfig, cwd: Path, staging: Path):
+    """
+    The workload kit with its setup_scripts install hook removed, for a `create --template`
+    that seeds an already-provisioned snapshot. Re-running setup on a snapshot is redundant,
+    and when the session user was converted root->agent it fails (the hook runs as agent
+    before the old root home's per-user toolchain state has been migrated).
+    """
+    # Named "workload" (not e.g. "workload-provisioned") so `sbx ls` shows the new box's agent
+    # exactly as a freshly-built 0.6 box; the kit dir is temporary and removed after create.
+    return workload.write_for_snapshot(config, cwd, staging / "workload")
+
+
 def _require_exists(name: str) -> None:
     if not sandbox.exists(name):
         raise AgyError(f"Sandbox '{name}' does not exist.", hint="Create it with 'agy-sandbox up'.")
@@ -140,10 +152,14 @@ def recreate(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
     console.step(f"Snapshotting '{name}' as template '{tag}'...")
     sandbox.save_template(name, tag)
     sandbox.remove(name)
-    restore_hint = [f"   Restore it with: {' '.join(sandbox.create_from_template_argv(plan, tag))}"]
+    # The snapshot already carries everything setup_scripts produced, so create from it with a
+    # workload that has no install hook; the saved plan keeps the real workload for upgrades.
+    staging.mkdir(parents=True, exist_ok=True)
+    create_plan = replace(plan, workload=_snapshot_workload(config, cwd, staging))
+    restore_hint = [f"   Restore it with: {' '.join(sandbox.create_from_template_argv(create_plan, tag))}"]
     restore_hint += [f"   then: sbx cp {src} {name}:{Path(path).parent}" for path, src in staged]
     try:
-        sandbox.create_from_template(plan, tag)
+        sandbox.create_from_template(create_plan, tag)
     except Exception:
         console.warn(f"The sandbox could not be recreated. Its snapshot is template '{tag}'"
                      + (f" and its carried-out data is under {staging}" if staged else "") + ".")
@@ -200,7 +216,8 @@ def _migrate_root_home(name: str) -> List[str]:
     """
     script = MIGRATE_HOME_SCRIPT.read_text(encoding="utf-8")
     res = sandbox.exec_script(name, script, user="root")
-    lines = [ln for ln in (res.stdout or "").splitlines() if ln[:4] in ("MOVE", "KEPT", "REF ")]
+    lines = [ln for ln in (res.stdout or "").splitlines()
+             if ln.split(" ", 1)[0] in ("MOVED", "KEPT", "RELINK", "FIXVENV", "REF")]
     if res.returncode != 0:
         raise SandboxError(f"Migrating /root into /home/agent failed (exit {res.returncode}).",
                            hint=(res.stderr or "").strip() or None, command=("sbx", "exec", name),
@@ -280,8 +297,11 @@ def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = T
     # 3. Create the NEW sandbox from the (converted) snapshot. Once it exists it owns its own
     # copy of the layers, and the untouched old sandbox is the rollback, so the snapshot template
     # is redundant and removed. On failure it is kept so the create can be retried from it.
+    # The snapshot already carries everything setup_scripts produced; create from it with a
+    # workload that has no install hook (re-running it as the converted agent user would fail).
+    create_plan = replace(plan, workload=_snapshot_workload(config, cwd, staging))
     try:
-        sandbox.create_from_template(plan, tag)
+        sandbox.create_from_template(create_plan, tag)
     except Exception:
         console.warn(f"'{new_sandbox}' could not be created. Its snapshot is template '{tag}'"
                      + (f" and the carried-out data is under {staging}" if staged else "")
@@ -334,6 +354,8 @@ def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = T
 def _write_report(path: Path, old_name: str, new_name: str, diff, move_report: List[str], converted: bool) -> None:
     """Writes the complete before/after comparison and move log for the person to review."""
     kept = [ln[5:] for ln in move_report if ln.startswith("KEPT ")]
+    relinked = sorted({ln[7:] for ln in move_report if ln.startswith("RELINK ")})
+    fixvenv = sorted({ln[8:] for ln in move_report if ln.startswith("FIXVENV ")})
     refs = sorted({ln[4:] for ln in move_report if ln.startswith("REF ")})
     lines = [f"recreate --as report: {old_name} -> {new_name}", ""]
     lines.append("Session user converted from root to agent." if converted else "Old sandbox already ran as agent.")
@@ -341,6 +363,10 @@ def _write_report(path: Path, old_name: str, new_name: str, diff, move_report: L
         lines.append("The old root home was moved into /home/agent.")
         if kept:
             lines += ["", f"Existing agent files kept beside the moved ones ({len(kept)}):"] + [f"   {k}" for k in kept]
+        if relinked:
+            lines += ["", f"Symlinks repointed from /root into /home/agent ({len(relinked)}):"] + [f"   {r}" for r in relinked]
+        if fixvenv:
+            lines += ["", f"Virtualenv files whose /root paths were rewritten to /home/agent ({len(fixvenv)}):"] + [f"   {r}" for r in fixvenv]
         if refs:
             lines += ["", f"Moved files that still mention /root/ ({len(refs)}):"] + [f"   {r}" for r in refs]
     lines += ["", "File comparison (old sandbox vs new sandbox):"] + inventory.render(diff, full=True)

@@ -65,7 +65,7 @@ def project_dockerfile(cwd: Path) -> Tuple[Path, bool]:
     return PACKAGED_DOCKERFILE, False
 
 
-def render_descriptor(config: AgyConfig) -> dict:
+def render_descriptor(config: AgyConfig, *, include_setup: bool = True) -> dict:
     args = {"BASE_IMAGE": {"default": config.base_image, "buildArg": "BASE_IMAGE"}}
     for key, value in config.build_args.items():
         args[key] = {"default": str(value), "buildArg": key}
@@ -77,7 +77,12 @@ def render_descriptor(config: AgyConfig) -> dict:
         "args": args,
         "capabilities": [{"type": "com.docker.sandbox/sbx@1"}],
     }
-    if config.setup_scripts:
+    # A recreate builds from a snapshot that already holds everything setup_scripts produced
+    # (fetched deps, installed tools), so re-running them is redundant and, when the session
+    # user was converted root->agent, broken: the install hook runs as agent before the old
+    # root home (with its per-user toolchain state) has been migrated. include_setup=False
+    # drops the hook for those snapshot creates; the startup hooks are kept.
+    if config.setup_scripts and include_setup:
         script = "set -e\ncd \"${WORKSPACE_DIR:-$HOME}\"\n" + "\n".join(config.setup_scripts) + "\n"
         descriptor["capabilities"].append({
             "type": "com.docker.sandbox/lifecycle@1",
@@ -112,8 +117,8 @@ def render_dockerfile(source_text: str, base_image: str) -> str:
     return "".join(lines)
 
 
-def descriptor_text(config: AgyConfig) -> str:
-    body = yaml.dump(render_descriptor(config), Dumper=_Dumper, sort_keys=False, width=1000)
+def descriptor_text(config: AgyConfig, *, include_setup: bool = True) -> str:
+    body = yaml.dump(render_descriptor(config, include_setup=include_setup), Dumper=_Dumper, sort_keys=False, width=1000)
     return f"{KIT_DESCRIPTOR_SYNTAX}\n{body}"
 
 
@@ -144,6 +149,22 @@ def write(config: AgyConfig, cwd: Path) -> WorkloadRef:
         if not target.is_file() or target.read_text(encoding="utf-8") != text:
             target.write_text(text, encoding="utf-8")
     return rendered.ref
+
+
+def write_for_snapshot(config: AgyConfig, cwd: Path, dest_dir: Path) -> WorkloadRef:
+    """
+    Writes the workload kit without its setup_scripts install hook into `dest_dir`, for a
+    `sbx create --template` that seeds the already-provisioned snapshot. The Dockerfile is
+    identical to the normal workload; only the install hook is dropped. The normal workload
+    kit directory (used by the saved plan and future upgrades) is left untouched.
+    """
+    source, _ = project_dockerfile(cwd)
+    dockerfile = render_dockerfile(source.read_text(encoding="utf-8"), config.base_image)
+    descriptor = descriptor_text(config, include_setup=False)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for name, text in ((f"{WORKLOAD_KIT_NAME}.yaml", descriptor), (f"{WORKLOAD_KIT_NAME}.dockerfile", dockerfile)):
+        (dest_dir / name).write_text(text, encoding="utf-8")
+    return WorkloadRef(dir=str(dest_dir), fingerprint=fingerprint(descriptor, dockerfile))
 
 
 def delete(sandbox_name: str) -> None:
