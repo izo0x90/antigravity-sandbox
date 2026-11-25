@@ -219,8 +219,8 @@ Sandboxes created by agy-sandbox 0.5 keep running and `up` resumes them, but the
 so `upgrade` refuses them. They also ran their sessions as root. To move one to 0.6 on the agent user
 without losing its contents, use `recreate --as <new-name>`: it builds the upgraded sandbox beside the
 old one, converts the user, migrates the old root home, and verifies the result, so you keep the
-original until you have checked the copy. `recreate` without `--as`, or `up --rebuild`, also work but
-replace the sandbox in place.
+original until you have checked the copy. `recreate` without `--as` refuses a sandbox whose sessions
+start as root (it would replace the sandbox in place and strand the root home) and points at `--as`.
 
 ## Code Guardian
 

@@ -38,6 +38,11 @@ def _snapshot_workload(config: AgyConfig, cwd: Path, staging: Path):
     return workload.write_for_snapshot(config, cwd, staging / "workload")
 
 
+def _session_user(name: str) -> str:
+    """The user a plain `sbx exec` runs as, i.e. the user the sandbox starts its sessions as."""
+    return (sandbox.exec_script(name, "id -un").stdout or "").strip()
+
+
 def _require_exists(name: str) -> None:
     if not sandbox.exists(name):
         raise AgyError(f"Sandbox '{name}' does not exist.", hint="Create it with 'agy-sandbox up'.")
@@ -127,6 +132,15 @@ def recreate(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
         if drift.needs_rebuild:
             # A snapshot carries the old image; recording a new workload as applied would hide the change forever.
             raise UpgradeRefused([r for r in drift.reasons() if "workload" in r or "clone" in r], hint=_remedy_hint(drift))
+    # A recreated sandbox starts its sessions as agent. If the old one starts as someone else (a
+    # 0.5 box runs as root), recreating in place would strand that user's home; `recreate --as`
+    # knows how to convert root, and only root.
+    user = _session_user(name)
+    if user != snapshot.AGENT_USER:
+        raise AgyError(f"Sandbox '{name}' starts its sessions as '{user}', but a recreated sandbox starts as "
+                       f"'{snapshot.AGENT_USER}' and would leave that user's files behind.",
+                       hint=(f"Build a converted copy beside it instead: agy-sandbox recreate --as {config.project_name}-v2"
+                             if user == snapshot.ROOT_USER else None))
     workload.write(config, cwd)
     plan = replace(wanted, clone=saved.clone, workspace=saved.workspace)
 
@@ -212,7 +226,7 @@ def _exec_or_raise(name: str, script: str, user: str) -> None:
 def _migrate_root_home(name: str) -> List[str]:
     """
     Relocates a legacy root session's home into /home/agent, inside the running
-    sandbox, and returns the report lines (MOVED/KEPT/REF). Raises on failure.
+    sandbox, and returns the report lines (MOVED/KEPT/RELINK/FIXVENV/REF). Raises on failure.
     """
     script = MIGRATE_HOME_SCRIPT.read_text(encoding="utf-8")
     res = sandbox.exec_script(name, script, user="root")

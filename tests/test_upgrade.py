@@ -206,6 +206,7 @@ class TestRecreate(UpgradeBase):
         ]
         mocks = {p.attribute: p.start() for p in patches}
         mocks["exec_script"].return_value.returncode = 0
+        mocks["exec_script"].return_value.stdout = "agent\n"   # the box already starts as agent
         try:
             code = upgrade.recreate(cfg, Path(self.cwd.name))
         finally:
@@ -245,9 +246,10 @@ class TestRecreate(UpgradeBase):
 
     def test_failed_recreate_prints_the_restore_command_and_raises(self):
         self.save(config())
-        with patch(SBX + "exec_script"), patch(SBX + "copy_from"), patch(SBX + "stop"), patch(SBX + "save_template"), \
+        with patch(SBX + "exec_script") as ex, patch(SBX + "copy_from"), patch(SBX + "stop"), patch(SBX + "save_template"), \
              patch(SBX + "remove"), patch(SBX + "create_from_template", side_effect=SandboxError("nope")), \
              self.assertRaises(SandboxError):
+            ex.return_value.stdout = "agent\n"
             upgrade.recreate(config(), Path(self.cwd.name))
         restore = messages_containing(self.out, "Restore it with: sbx create --name agy-sandbox-demo --template")
         self.assertEqual(len(restore), 1)
@@ -259,10 +261,32 @@ class TestRecreate(UpgradeBase):
              patch(SBX + "remove"), patch(SBX + "create_from_template"), patch(SBX + "copy_to", side_effect=SandboxError("cp failed")), \
              self.assertRaises(SandboxError):
             ex.return_value.returncode = 0
+            ex.return_value.stdout = "agent\n"
             upgrade.recreate(config(kits=["claude"]), Path(self.cwd.name))
         self.assertEqual(compose.load_plan("agy-sandbox-demo").mixin_names(), ["claude"])
         self.assertTrue(messages_containing(self.out, "was not fully restored"))
         self.assertTrue(messages_containing(self.out, "then: sbx cp "))
+
+    def test_a_root_box_is_refused_in_place_and_pointed_at_recreate_as(self):
+        self.save(config())
+        with patch(SBX + "exec_script") as ex, patch(SBX + "stop") as stop, patch(SBX + "remove") as remove:
+            ex.return_value.stdout = "root\n"
+            with self.assertRaises(AgyError) as ctx:
+                upgrade.recreate(config(), Path(self.cwd.name))
+        self.assertIn("starts its sessions as 'root'", str(ctx.exception))
+        self.assertIn("recreate --as demo-v2", ctx.exception.hint)
+        stop.assert_not_called()
+        remove.assert_not_called()   # nothing destructive happened
+
+    def test_an_unknown_session_user_is_refused_without_a_suggestion(self):
+        self.save(config())
+        with patch(SBX + "exec_script") as ex, patch(SBX + "remove") as remove:
+            ex.return_value.stdout = "builder\n"
+            with self.assertRaises(AgyError) as ctx:
+                upgrade.recreate(config(), Path(self.cwd.name))
+        self.assertIn("'builder'", str(ctx.exception))
+        self.assertIsNone(ctx.exception.hint)   # --as only converts root, so it is not offered
+        remove.assert_not_called()
 
     def test_without_saved_plan_falls_back_to_inspect(self):
         with patch(SBX + "inspect", return_value=SandboxInfo("agy-sandbox-demo", "stopped", (), "/old", True)):
