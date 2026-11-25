@@ -6,6 +6,13 @@ description: The oh-my-pi terminal AI coding agent and tool harness.
 version: "1.0.0"
 provides: ["omp"]
 
+args:
+  version:
+    default: v19.2.1
+    pattern: '^v[0-9]+\.[0-9]+\.[0-9]+$'
+    description: oh-my-pi release tag to install (https://github.com/can1357/oh-my-pi/releases)
+    buildArg: OMP_VERSION
+
 capabilities:
   # omp talks to whichever model provider the user configures; no fixed host list.
   - type: com.docker.sandbox/network-policy@1
