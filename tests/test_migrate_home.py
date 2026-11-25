@@ -101,6 +101,21 @@ class TestMigrateHome(unittest.TestCase):
         self.assertEqual((self.dst / ".omp/logs/run.log").read_text(), f"started in {self.src}/work\n")  # log untouched
         self.assertTrue(any(p.endswith(".omp/logs/run.log") for p in report["REF"]))  # flagged, not rewritten
 
+    def test_venv_fix_never_writes_through_a_symlink(self):
+        # A bin/ entry that is a symlink to a text file elsewhere must not get that file rewritten.
+        tool = self.src / ".local/share/uv/tools/reg"
+        (tool / "bin").mkdir(parents=True)
+        (tool / "lib").mkdir()
+        (tool / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (tool / "lib" / "notes.txt").write_text(f"see {self.src}/x\n")
+        (tool / "bin" / "notes").symlink_to("../lib/notes.txt")           # relative, stays valid after the move
+
+        res, report = run_migrate(self.src, self.dst)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        new_tool = self.dst / ".local/share/uv/tools/reg"
+        self.assertEqual((new_tool / "lib/notes.txt").read_text(), f"see {self.src}/x\n")   # untouched
+        self.assertEqual(report["FIXVENV"], [])
+
     def test_name_clash_preserves_the_agent_file_as_pre_migration(self):
         self.src.mkdir(parents=True)
         (self.src / ".bashrc").write_text("root")

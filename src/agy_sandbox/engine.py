@@ -110,7 +110,6 @@ def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path, attach: bool = Tr
         if not rebuild:
             return resume(config, cwd, attach=attach)
         sandbox.remove(name)
-        compose.delete_plan(name)
         workload.delete(name)
     if config.sandbox_id is None:
         config.sandbox_id = new_sandbox_id()
@@ -133,7 +132,6 @@ def down(config: AgyConfig) -> None:
         else:
             sandbox.remove(name)
             console.step("Done.")
-        compose.delete_plan(name)
         workload.delete(name)
     finally:
         host_browser_for(config).stop()

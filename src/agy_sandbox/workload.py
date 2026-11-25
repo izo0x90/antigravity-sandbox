@@ -9,7 +9,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import yaml
 
@@ -130,18 +130,18 @@ def fingerprint(descriptor: str, dockerfile: str) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def render(config: AgyConfig, cwd: Path) -> Rendered:
+def render(config: AgyConfig, cwd: Path, *, include_setup: bool = True, kit_dir: Optional[Path] = None) -> Rendered:
     """What the workload kit for this config would contain; touches nothing on disk."""
     source, _ = project_dockerfile(cwd)
     dockerfile = render_dockerfile(source.read_text(encoding="utf-8"), config.base_image)
-    descriptor = descriptor_text(config)
-    kit_dir = paths.workload_dir(config.sandbox_name)
+    descriptor = descriptor_text(config, include_setup=include_setup)
+    kit_dir = kit_dir or paths.workload_dir(config.sandbox_name)
     return Rendered(WorkloadRef(dir=str(kit_dir), fingerprint=fingerprint(descriptor, dockerfile)), descriptor, dockerfile)
 
 
-def write(config: AgyConfig, cwd: Path) -> WorkloadRef:
+def write(config: AgyConfig, cwd: Path, *, include_setup: bool = True, kit_dir: Optional[Path] = None) -> WorkloadRef:
     """Writes (or refreshes) the workload kit directory for this sandbox and returns its reference."""
-    rendered = render(config, cwd)
+    rendered = render(config, cwd, include_setup=include_setup, kit_dir=kit_dir)
     kit_dir = Path(rendered.ref.dir)
     kit_dir.mkdir(parents=True, exist_ok=True)
     for name, text in ((f"{WORKLOAD_KIT_NAME}.yaml", rendered.descriptor), (f"{WORKLOAD_KIT_NAME}.dockerfile", rendered.dockerfile)):
@@ -151,26 +151,16 @@ def write(config: AgyConfig, cwd: Path) -> WorkloadRef:
     return rendered.ref
 
 
-def write_for_snapshot(config: AgyConfig, cwd: Path, dest_dir: Path) -> WorkloadRef:
+def write_for_snapshot(config: AgyConfig, cwd: Path, dest_dir: Optional[Path] = None) -> WorkloadRef:
     """
-    Writes the workload kit without its setup_scripts install hook into `dest_dir`, for a
-    `sbx create --template` that seeds the already-provisioned snapshot. The Dockerfile is
-    identical to the normal workload; only the install hook is dropped. The normal workload
-    kit directory (used by the saved plan and future upgrades) is left untouched.
+    Writes the workload kit without its setup_scripts install hook, for a `sbx create --template`
+    that seeds the already-provisioned snapshot. The Dockerfile is identical to the normal
+    workload; only the install hook is dropped. The normal kit directory (recorded in the plan,
+    used by future upgrades) is left untouched.
     """
-    source, _ = project_dockerfile(cwd)
-    dockerfile = render_dockerfile(source.read_text(encoding="utf-8"), config.base_image)
-    descriptor = descriptor_text(config, include_setup=False)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    for name, text in ((f"{WORKLOAD_KIT_NAME}.yaml", descriptor), (f"{WORKLOAD_KIT_NAME}.dockerfile", dockerfile)):
-        (dest_dir / name).write_text(text, encoding="utf-8")
-    return WorkloadRef(dir=str(dest_dir), fingerprint=fingerprint(descriptor, dockerfile))
+    return write(config, cwd, include_setup=False, kit_dir=dest_dir or paths.snapshot_workload_dir(config.sandbox_name))
 
 
 def delete(sandbox_name: str) -> None:
-    """Removes the generated kit directory of a sandbox that no longer exists."""
-    shutil.rmtree(paths.workload_dir(sandbox_name), ignore_errors=True)
-    try:
-        paths.workload_dir(sandbox_name).parent.rmdir()
-    except OSError:
-        pass
+    """Removes everything generated for the kits of a sandbox that no longer exists."""
+    shutil.rmtree(paths.kits_dir(sandbox_name), ignore_errors=True)

@@ -14,14 +14,23 @@ def state_dir() -> Path:
     return Path(os.environ.get(STATE_DIR_ENV) or STATE_DIR).expanduser()
 
 
-def plan_path(sandbox: str) -> Path:
-    """The saved SandboxPlan a sandbox was created or last upgraded with."""
-    return state_dir() / "sandboxes" / sandbox / "plan.json"
+def kits_dir(sandbox: str) -> Path:
+    """Everything generated for one sandbox's kits; removed with the sandbox."""
+    return state_dir() / "kits" / sandbox
 
 
 def workload_dir(sandbox: str) -> Path:
     """The generated v3 workload kit for a sandbox."""
-    return state_dir() / "kits" / sandbox / "workload"
+    return kits_dir(sandbox) / "workload"
+
+
+def snapshot_workload_dir(sandbox: str) -> Path:
+    """
+    The workload kit without its install hook, used to create a sandbox from a snapshot. Kept
+    (not staged) because sbx records the kit path it created the sandbox with; the last
+    directory is named like the normal kit so `sbx ls` shows the same agent label.
+    """
+    return kits_dir(sandbox) / "snapshot" / "workload"
 
 
 def recreate_staging(sandbox: str, stamp: str) -> Path:

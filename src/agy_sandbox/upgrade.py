@@ -26,16 +26,14 @@ from .errors import AgyError, SandboxError, UpgradeRefused
 MIGRATE_HOME_SCRIPT = Path(__file__).resolve().parent / "migrate_home.sh"
 
 
-def _snapshot_workload(config: AgyConfig, cwd: Path, staging: Path):
+def _snapshot_workload(config: AgyConfig, cwd: Path):
     """
     The workload kit with its setup_scripts install hook removed, for a `create --template`
     that seeds an already-provisioned snapshot. Re-running setup on a snapshot is redundant,
     and when the session user was converted root->agent it fails (the hook runs as agent
     before the old root home's per-user toolchain state has been migrated).
     """
-    # Named "workload" (not e.g. "workload-provisioned") so `sbx ls` shows the new box's agent
-    # exactly as a freshly-built 0.6 box; the kit dir is temporary and removed after create.
-    return workload.write_for_snapshot(config, cwd, staging / "workload")
+    return workload.write_for_snapshot(config, cwd)
 
 
 def _session_user(name: str) -> str:
@@ -168,8 +166,7 @@ def recreate(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
     sandbox.remove(name)
     # The snapshot already carries everything setup_scripts produced, so create from it with a
     # workload that has no install hook; the saved plan keeps the real workload for upgrades.
-    staging.mkdir(parents=True, exist_ok=True)
-    create_plan = replace(plan, workload=_snapshot_workload(config, cwd, staging))
+    create_plan = replace(plan, workload=_snapshot_workload(config, cwd))
     restore_hint = [f"   Restore it with: {' '.join(sandbox.create_from_template_argv(create_plan, tag))}"]
     restore_hint += [f"   then: sbx cp {src} {name}:{Path(path).parent}" for path, src in staged]
     try:
@@ -195,12 +192,12 @@ def recreate(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
         for line in restore_hint[1:]:
             console.info(line)
         raise
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        staging.parent.rmdir()
+    except OSError:
+        pass
     if staged:
-        shutil.rmtree(staging, ignore_errors=True)
-        try:
-            staging.parent.rmdir()
-        except OSError:
-            pass
         console.step("Restored the carried-out data.")
 
     # 4. Keep this snapshot as the rollback point; older ones for this sandbox go.
@@ -316,7 +313,7 @@ def recreate_next(config: AgyConfig, cwd: Path, *, attach: bool = True, config_p
     # is redundant and removed. On failure it is kept so the create can be retried from it.
     # The snapshot already carries everything setup_scripts produced; create from it with a
     # workload that has no install hook (re-running it as the converted agent user would fail).
-    create_plan = replace(plan, workload=_snapshot_workload(new_config, cwd, staging))
+    create_plan = replace(plan, workload=_snapshot_workload(new_config, cwd))
     try:
         sandbox.create_from_template(create_plan, tag)
     except Exception:

@@ -200,7 +200,7 @@ class TestDown(unittest.TestCase):
                 name=cfg.sandbox_name, workspace="/w", clone=False, auth_mode="sandbox-local",
                 workload=WorkloadRef("/x", "sha256:1"), mixins=(KitRef("claude", "/k", True),), kit_args=(), env=(), ports=()))
             engine.down(cfg)
-            self.assertIsNone(compose.load_plan(cfg.sandbox_name))
+            # the build record lives inside the sandbox, so removing the sandbox removed it
         remove.assert_called_once_with("agy-sandbox-demo")
         browser.return_value.stop.assert_called_once()
 

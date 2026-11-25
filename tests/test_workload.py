@@ -47,6 +47,17 @@ class TestRender(unittest.TestCase):
             self.assertNotIn("cargo fetch", (dest / "workload.yaml").read_text())
             self.assertIn("cargo fetch", (Path(normal.dir) / "workload.yaml").read_text())   # normal kit untouched
 
+    def test_snapshot_kit_lives_beside_the_normal_one_and_goes_with_it(self):
+        # sbx records the kit path it created a sandbox from, so the snapshot kit is kept, not staged.
+        cfg = AgyConfig(project_name="demo", setup_scripts=["cargo fetch"])
+        with isolated_state() as state, tempfile.TemporaryDirectory() as cwd:
+            ref = workload.write_for_snapshot(cfg, Path(cwd))
+            self.assertEqual(Path(ref.dir), state / "kits" / "agy-sandbox-demo" / "snapshot" / "workload")
+            self.assertEqual(Path(ref.dir).name, "workload")          # same agent label in `sbx ls`
+            self.assertTrue((Path(ref.dir) / "workload.yaml").is_file())
+            workload.delete("agy-sandbox-demo")
+            self.assertFalse((state / "kits" / "agy-sandbox-demo").exists())
+
     def test_descriptor_text_starts_with_the_syntax_header_and_parses(self):
         text = workload.descriptor_text(AgyConfig(project_name="demo", setup_scripts=["echo hi"]))
         self.assertTrue(text.startswith(KIT_DESCRIPTOR_SYNTAX + "\n"))

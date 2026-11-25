@@ -1,14 +1,14 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from agy_sandbox import compose
-from agy_sandbox.compose import SandboxPlan, delete_plan, load_plan, plan, save_plan
+from agy_sandbox.compose import PLAN_PATH, SandboxPlan, load_plan, plan, save_plan
 from agy_sandbox.config import AgyConfig, HostBrowserConfig
 from agy_sandbox.errors import ConfigError
-from agy_sandbox.paths import plan_path
 from agy_sandbox.workload import WorkloadRef
 
-from tests.support import isolated_state
+from tests.support import sandbox_files
 
 WORKLOAD = WorkloadRef(dir="/state/kits/x/workload", fingerprint="sha256:abc")
 
@@ -66,37 +66,49 @@ class TestPlan(unittest.TestCase):
 
 
 class TestPersistence(unittest.TestCase):
-    def test_round_trip(self):
-        with isolated_state():
+    def test_round_trip_through_the_file_inside_the_sandbox(self):
+        with sandbox_files() as files:
             p = make_plan(auth_mode="proxy-managed", env=["A=1"], ports=["80:80"])
             save_plan(p)
+            self.assertEqual(list(files), [(p.name, PLAN_PATH)])      # written into that sandbox, nowhere on the host
             loaded = load_plan(p.name)
             self.assertEqual(loaded, SandboxPlan(**{**p.__dict__}))
             self.assertEqual(loaded.workload, WORKLOAD)
-            data = json.loads(plan_path(p.name).read_text())
+            data = json.loads(files[(p.name, PLAN_PATH)])
             self.assertEqual(data["schema"], 1)
             self.assertIn("saved_at", data)
-            delete_plan(p.name)
-            self.assertIsNone(load_plan(p.name))
 
-    def test_missing_plan_is_none(self):
-        with isolated_state():
+    def test_a_sandbox_without_a_record_is_none(self):
+        with sandbox_files():
             self.assertIsNone(load_plan("agy-sandbox-nothing"))
 
-    def test_newer_schema_and_corrupt_files_are_config_errors(self):
-        with isolated_state():
-            path = plan_path("agy-sandbox-x")
-            path.parent.mkdir(parents=True)
-            path.write_text(json.dumps({"schema": 99}), encoding="utf-8")
+    def test_newer_schema_and_corrupt_records_are_config_errors(self):
+        with sandbox_files() as files:
+            key = ("agy-sandbox-x", PLAN_PATH)
+            files[key] = json.dumps({"schema": 99})
             with self.assertRaises(ConfigError) as ctx:
                 load_plan("agy-sandbox-x")
             self.assertIn("newer", ctx.exception.message)
-            path.write_text("{not json", encoding="utf-8")
+            files[key] = "{not json"
             with self.assertRaises(ConfigError):
                 load_plan("agy-sandbox-x")
-            path.write_text(json.dumps({"schema": 1, "name": "x"}), encoding="utf-8")
-            with self.assertRaises(ConfigError):
+            files[key] = json.dumps({"schema": 1, "name": "x"})
+            with self.assertRaises(ConfigError) as ctx:
                 load_plan("agy-sandbox-x")
+            self.assertIn("up --rebuild", ctx.exception.hint)
+
+    def test_write_and_read_file_run_through_one_root_exec_each(self):
+        import subprocess
+        from agy_sandbox import sandbox
+        with patch("agy_sandbox.sandbox.exec_script", return_value=subprocess.CompletedProcess([], 0, stdout="{}", stderr="")) as ex:
+            sandbox.write_file("box", "/etc/agy-sandbox/plan.json", '{"a": 1}')
+            self.assertEqual(ex.call_args.kwargs["user"], "root")
+            script = ex.call_args[0][1]
+            self.assertIn("mkdir -p", script)
+            self.assertIn('{"a": 1}', script)
+            self.assertEqual(sandbox.read_file("box", "/etc/agy-sandbox/plan.json"), "{}")
+        with patch("agy_sandbox.sandbox.exec_script", return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="no such file")):
+            self.assertIsNone(sandbox.read_file("box", "/etc/agy-sandbox/plan.json"))
 
     def test_plan_records_the_tool_version(self):
         self.assertEqual(make_plan().agy_version, compose.__version__)

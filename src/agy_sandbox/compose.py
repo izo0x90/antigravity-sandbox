@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Dict, FrozenSet, List, Optional, Sequence, Tuple
 
-from . import __version__, paths
+from . import __version__
 from .config import AgyConfig
 from .constants import AUTH_MODE_PROXY_MANAGED, KIT_CHROME_DEVTOOLS, KIT_CHROME_HOST, PLAN_SCHEMA_VERSION
 from .errors import ConfigError
@@ -210,30 +210,37 @@ def diff(saved: SandboxPlan, wanted: SandboxPlan) -> Drift:
 
 
 # ---------------------------------------------------------------------------
-# persistence: the plan a sandbox was created or last upgraded with
+# the build record: the plan a sandbox was created or last upgraded with
 # ---------------------------------------------------------------------------
+# It lives inside the sandbox, so it is exactly as durable as the sandbox, travels with every
+# snapshot of it, and nothing on the host has to be kept in step with it. Reading it starts a
+# stopped sandbox; every caller is about to attach to or copy from it anyway.
+PLAN_PATH = "/etc/agy-sandbox/plan.json"
+_REBUILD_HINT = "Recreate it with 'agy-sandbox up --rebuild'."
+
+
 def save_plan(sandbox_plan: SandboxPlan) -> None:
-    path = paths.plan_path(sandbox_plan.name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(sandbox_plan.to_dict(), indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    from . import sandbox   # sandbox imports SandboxPlan from here; the cycle is broken at call time
+    sandbox.write_file(sandbox_plan.name, PLAN_PATH, json.dumps(sandbox_plan.to_dict(), indent=2))
 
 
 def load_plan(name: str) -> Optional[SandboxPlan]:
-    path = paths.plan_path(name)
-    if not path.is_file():
+    """The build record of an existing sandbox; None for one made before agy-sandbox wrote them (0.5)."""
+    from . import sandbox
+    text = sandbox.read_file(name, PLAN_PATH)
+    if text is None:
         return None
+    where = f"{PLAN_PATH} in sandbox '{name}'"
     try:
-        data: Dict = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        raise ConfigError(f"Saved sandbox plan {path} is unreadable: {e}", hint="Delete it and run 'agy-sandbox up --rebuild'.")
+        data: Dict = json.loads(text)
+    except ValueError as e:
+        raise ConfigError(f"The build record {where} is unreadable: {e}", hint=_REBUILD_HINT)
     if not isinstance(data, dict):
-        raise ConfigError(f"Saved sandbox plan {path} is not a JSON object.", hint="Delete it and run 'agy-sandbox up --rebuild'.")
+        raise ConfigError(f"The build record {where} is not a JSON object.", hint=_REBUILD_HINT)
     try:
         schema = int(data.get("schema") or 0)
     except (TypeError, ValueError):
-        raise ConfigError(f"Saved sandbox plan {path} has an invalid schema field.", hint="Delete it and run 'agy-sandbox up --rebuild'.")
+        raise ConfigError(f"The build record {where} has an invalid schema field.", hint=_REBUILD_HINT)
     if schema > PLAN_SCHEMA_VERSION:
         raise ConfigError(
             f"Sandbox '{name}' was created by a newer agy-sandbox (plan schema {schema}).",
@@ -242,14 +249,4 @@ def load_plan(name: str) -> Optional[SandboxPlan]:
     try:
         return SandboxPlan.from_dict(data)
     except (KeyError, TypeError) as e:
-        raise ConfigError(f"Saved sandbox plan {path} is incomplete: {e}", hint="Delete it and run 'agy-sandbox up --rebuild'.")
-
-
-def delete_plan(name: str) -> None:
-    path = paths.plan_path(name)
-    if path.is_file():
-        path.unlink()
-    try:
-        path.parent.rmdir()
-    except OSError:
-        pass
+        raise ConfigError(f"The build record {where} is incomplete: {e}", hint=_REBUILD_HINT)

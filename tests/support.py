@@ -64,10 +64,26 @@ class FakeSbx:
 
 @contextlib.contextmanager
 def isolated_state() -> Iterator[Path]:
-    """A temporary state directory exported through AGY_SANDBOX_STATE_DIR."""
-    with tempfile.TemporaryDirectory() as tmp:
-        with patch.dict(os.environ, {STATE_DIR_ENV: tmp}):
-            yield Path(tmp)
+    """
+    A temporary state directory exported through AGY_SANDBOX_STATE_DIR, plus an in-memory
+    stand-in for the files agy-sandbox writes inside sandboxes (the build record), keyed by
+    (sandbox, path), so compose.save_plan/load_plan work without an sbx.
+    """
+    files: Dict[Tuple[str, str], str] = {}
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch.dict(os.environ, {STATE_DIR_ENV: tmp}), \
+            patch("agy_sandbox.sandbox.write_file", side_effect=lambda name, path, text: files.__setitem__((name, path), text)), \
+            patch("agy_sandbox.sandbox.read_file", side_effect=lambda name, path: files.get((name, path))):
+        yield Path(tmp)
+
+
+@contextlib.contextmanager
+def sandbox_files() -> Iterator[Dict[Tuple[str, str], str]]:
+    """The in-memory sandbox files on their own, for tests that inspect or plant a build record."""
+    files: Dict[Tuple[str, str], str] = {}
+    with patch("agy_sandbox.sandbox.write_file", side_effect=lambda name, path, text: files.__setitem__((name, path), text)), \
+            patch("agy_sandbox.sandbox.read_file", side_effect=lambda name, path: files.get((name, path))):
+        yield files
 
 
 @contextlib.contextmanager

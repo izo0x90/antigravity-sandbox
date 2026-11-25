@@ -68,8 +68,13 @@ find "$DST" -type l 2>/dev/null | while IFS= read -r link; do
   target=$(readlink "$link")
   case "$target" in
     "$SRC" | "$SRC"/*)
-      ln -sfn "$DST${target#"$SRC"}" "$link"
-      echo "RELINK ${link#"$DST"/}"
+      # A link that cannot be rewritten (e.g. on a read-only mount) is reported, not fatal:
+      # everything has already moved and the person can fix one link by hand.
+      if ln -sfn "$DST${target#"$SRC"}" "$link" 2>/dev/null; then
+        echo "RELINK ${link#"$DST"/}"
+      else
+        echo "could not repoint symlink $link -> $target" >&2
+      fi
       ;;
   esac
 done
@@ -84,7 +89,7 @@ find "$DST" -name pyvenv.cfg -type f 2>/dev/null | while IFS= read -r cfg; do
   # The venv's top-level metadata (pyvenv.cfg, uv-receipt.toml, ...) and every bin/ entry
   # point — but never lib/, where a package's own data may legitimately contain the string.
   for f in "$venv"/* "$venv"/bin/*; do
-    [ -f "$f" ] || continue
+    [ -f "$f" ] && [ ! -L "$f" ] || continue    # never write through a symlink into some other file
     grep -IFq -- "$SRC/" "$f" 2>/dev/null || continue
     tmp="$f.migtmp"
     if sed "s#$SRC/#$DST/#g" "$f" > "$tmp" && cat "$tmp" > "$f"; then

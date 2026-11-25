@@ -325,6 +325,25 @@ def exec_script(name: str, script: str, user: Optional[str] = None) -> subproces
     return _run(argv, timeout=SANDBOX_EXEC_TIMEOUT)
 
 
+def read_file(name: str, path: str) -> Optional[str]:
+    """The text of a file inside a sandbox (starting it when stopped), or None when there is no such file."""
+    res = exec_script(name, f"cat '{path}'")
+    return res.stdout if res.returncode == 0 else None
+
+
+def write_file(name: str, path: str, text: str) -> None:
+    """Writes a root-owned, world-readable file inside a sandbox (starting it when stopped), creating its directory."""
+    marker = "AGY_SANDBOX_EOF"
+    if marker in text:
+        raise ValueError(f"file content may not contain {marker}")
+    script = (f"set -e\nmkdir -p \"$(dirname '{path}')\"\ncat > '{path}' <<'{marker}'\n{text}\n{marker}\nchmod 644 '{path}'\n")
+    res = exec_script(name, script, user="root")
+    if res.returncode != 0:
+        raise SandboxError(f"Could not write {path} inside sandbox '{name}' (exit {res.returncode}).",
+                           hint=(res.stderr or "").strip() or None, command=["sbx", "exec", name],
+                           returncode=res.returncode, stderr=res.stderr or "")
+
+
 # ---------------------------------------------------------------------------
 # templates, files, secrets
 # ---------------------------------------------------------------------------

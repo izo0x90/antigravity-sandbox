@@ -124,12 +124,14 @@ exist is simply not found, nothing creates one by number).
 agy.yaml ──> ~/.agy-sandbox/kits/<sandbox>/workload/      the generated v3 workload kit
              (workload.yaml + workload.dockerfile)        FROM base_image + your Dockerfile.agy
          ──> sbx create --name <sandbox> [--clone] (-e ..)* (-p ..)* (--kit <mixin>)* <workload> <workspace>
-         ──> ~/.agy-sandbox/sandboxes/<sandbox>/plan.json  what the sandbox was built with
+         ──> /etc/agy-sandbox/plan.json  (inside the sandbox)   what the sandbox was built with
 ```
 
 The mixins, in order: the primary agent's kit, every kit in `kits`, each followed by its
 `<kit>-credentials` kit when `auth_mode` is `proxy-managed`, then `chrome-host` when the host browser
-is on. The saved plan is how later runs know what changed (see Upgrading).
+is on. The build record is written into the sandbox itself, so it is exactly as durable as the
+sandbox and travels with every snapshot of it; later runs read it to know what changed (see
+Upgrading). Nothing about a sandbox is kept on the host.
 
 ## Login modes
 
@@ -263,7 +265,9 @@ scripts/validate-kits.sh                               # builds every kit descri
 scripts/live-check.sh                                  # live gates on a throwaway sandbox (needs sbx >= 0.50)
 ```
 
-Host-side state lives under `~/.agy-sandbox` (`AGY_SANDBOX_STATE_DIR` overrides it).
+Host-side state lives under `~/.agy-sandbox` (`AGY_SANDBOX_STATE_DIR` overrides it): the generated
+kit directories sbx builds from, host-browser profiles, and recreate staging and reports. Which
+sandbox a project means is in `agy.yaml`; what a sandbox was built with is inside the sandbox.
 
 ## License
 
