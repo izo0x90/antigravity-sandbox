@@ -14,14 +14,16 @@ import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
-from . import compose, console, kits, paths, sandbox, workload
+from . import compose, console, inventory, kits, paths, sandbox, snapshot, workload
 from .compose import SandboxPlan, kit_args_for_kit
 from .config import AgyConfig
 from .constants import MIN_SBX_VERSION_FOR_UPGRADE, RECREATE_TAG_PREFIX, SBX_UPGRADE_HINT
 from .engine import _session, desired_plan, host_browser_for, report_missing_secrets
 from .errors import AgyError, SandboxError, UpgradeRefused
+
+MIGRATE_HOME_SCRIPT = Path(__file__).resolve().parent / "migrate_home.sh"
 
 
 def _require_exists(name: str) -> None:
@@ -186,3 +188,164 @@ def _exec_or_raise(name: str, script: str, user: str) -> None:
         raise SandboxError(f"'sbx exec {name}' failed (exit {res.returncode}) while restoring data.",
                            hint=(res.stderr or "").strip() or None, command=("sbx", "exec", name),
                            returncode=res.returncode, stderr=res.stderr or "")
+
+
+# ---------------------------------------------------------------------------
+# recreate --as: build a new sandbox beside the old one, keeping the old untouched
+# ---------------------------------------------------------------------------
+def _migrate_root_home(name: str) -> List[str]:
+    """
+    Relocates a legacy root session's home into /home/agent, inside the running
+    sandbox, and returns the report lines (MOVED/KEPT/REF). Raises on failure.
+    """
+    script = MIGRATE_HOME_SCRIPT.read_text(encoding="utf-8")
+    res = sandbox.exec_script(name, script, user="root")
+    lines = [ln for ln in (res.stdout or "").splitlines() if ln[:4] in ("MOVE", "KEPT", "REF ")]
+    if res.returncode != 0:
+        raise SandboxError(f"Migrating /root into /home/agent failed (exit {res.returncode}).",
+                           hint=(res.stderr or "").strip() or None, command=("sbx", "exec", name),
+                           returncode=res.returncode, stderr=res.stderr or "")
+    return lines
+
+
+def _inventory(name: str, extra_paths: Sequence[str] = ()) -> str:
+    """A full file listing of a sandbox's root filesystem plus any separately-mounted paths."""
+    return sandbox.exec_script(name, inventory.script(extra_paths)).stdout or ""
+
+
+def recreate_as(config: AgyConfig, cwd: Path, *, new_name: str, attach: bool = True) -> int:
+    """
+    Snapshots the configured sandbox and builds a second sandbox named `new_name` from
+    that snapshot, with the 0.6 kits. The original sandbox is never modified or removed.
+
+    When the original starts its sessions as root (built by agy-sandbox 0.5), the
+    snapshot's start-user is flipped to agent and the old root home is migrated into
+    /home/agent, so the copy comes back on the agent user with its filesystem intact.
+    """
+    compose.validate_host_browser(config)
+    sandbox.require()
+    old_name = config.sandbox_name
+    _require_exists(old_name)
+    new_sandbox = config.sandbox_name_for(new_name)
+    if sandbox.exists(new_sandbox):
+        raise AgyError(f"Sandbox '{new_sandbox}' already exists.",
+                       hint=f"Choose another name, or remove it with 'sbx rm -f {new_sandbox}'.")
+
+    saved = compose.load_plan(old_name)
+    wanted = desired_plan(config, cwd, write=False)
+    if saved is None:
+        info = sandbox.inspect(old_name)
+        saved = replace(wanted, clone=info.clone, workspace=info.workspace or wanted.workspace, mixins=())
+    workload.write(config, cwd)
+    plan = replace(wanted, name=new_sandbox, clone=saved.clone, workspace=saved.workspace)
+
+    console.step(f"Building '{new_sandbox}' beside '{old_name}' ({config.auth_mode} logins); '{old_name}' is left untouched")
+    console.info(f"   kits: {' '.join(plan.mixin_names()) or '(none)'}")
+
+    # 1. Carry the clone workspace and kit volumes out of the OLD sandbox (read only to it).
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    staging = paths.recreate_staging(new_sandbox, stamp)
+    staging.mkdir(parents=True, exist_ok=True)   # holds the snapshot tar and any carried-out data
+    staged: List[Tuple[str, str]] = []
+    carry = carry_paths(saved, plan)
+    if carry:
+        console.step("Copying the clone workspace and kit volumes out..." if plan.clone else "Copying kit volumes out...")
+        sandbox.exec_script(old_name, "true")
+        for index, path in enumerate(carry):
+            dest = staging / str(index)
+            sandbox.copy_from(old_name, path, str(dest))
+            staged.append((path, str(dest / Path(path).name)))
+
+    # 2. Snapshot the OLD filesystem to a file, flip its start-user to agent, load it as the new tag.
+    old_text = _inventory(old_name)   # captured while the old box is up, before we stop it
+    sandbox.stop(old_name)
+    tar = staging / "snapshot.tar"
+    rolled = staging / "snapshot-agent.tar"
+    tag = f"{new_name}:{RECREATE_TAG_PREFIX}{stamp}"
+    export_tag = f"{old_name}:{RECREATE_TAG_PREFIX}{stamp}-export"
+    console.step(f"Snapshotting '{old_name}' and retagging it as '{tag}'...")
+    # save_template needs a tag of its own to also write the tar; the old box is kept, so that
+    # intermediate snapshot is redundant and removed once the tar is in hand.
+    sandbox.save_template(old_name, export_tag, output=str(tar))
+    sandbox.remove_template(export_tag)
+    info = snapshot.inspect(str(tar))
+    convert = not info.starts_as_agent
+    snapshot.rewrite(str(tar), str(rolled), user="agent" if convert else None, ref=tag)
+    sandbox.load_template(str(rolled))
+    tar.unlink(missing_ok=True)
+    rolled.unlink(missing_ok=True)
+    if convert:
+        console.info(f"   the old sandbox started sessions as '{info.user}'; the copy will start as 'agent'")
+
+    # 3. Create the NEW sandbox from the (converted) snapshot. Once it exists it owns its own
+    # copy of the layers, and the untouched old sandbox is the rollback, so the snapshot template
+    # is redundant and removed. On failure it is kept so the create can be retried from it.
+    try:
+        sandbox.create_from_template(plan, tag)
+    except Exception:
+        console.warn(f"'{new_sandbox}' could not be created. Its snapshot is template '{tag}'"
+                     + (f" and the carried-out data is under {staging}" if staged else "")
+                     + f". '{old_name}' is unchanged.")
+        raise
+    compose.save_plan(plan)
+    sandbox.remove_template(tag)
+
+    # 4. Restore the carried-out volumes and clone, THEN migrate the old root home on top.
+    # Order matters: for a legacy box the kit volumes under /home/agent were empty (the root
+    # session never used them) and the real session state is in /root, so the home move must
+    # land last or the (empty) volume restore would overwrite it.
+    report: List[str] = []
+    try:
+        for path, src in staged:
+            parent = str(Path(path).parent)
+            _exec_or_raise(new_sandbox, f"mkdir -p '{path}' && find '{path}' -mindepth 1 -delete", user="root")
+            sandbox.copy_to(src, new_sandbox, parent)
+            _exec_or_raise(new_sandbox, f"chown -R agent:agent '{path}'", user="root")
+        if convert:
+            console.step("Moving the old root home into /home/agent...")
+            report = _migrate_root_home(new_sandbox)
+    except Exception:
+        console.warn(f"'{new_sandbox}' was created but its data was not fully migrated. '{old_name}' is unchanged; "
+                     f"inspect '{new_sandbox}' or remove it with 'sbx rm -f {new_sandbox}' and retry.")
+        raise
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        staging.parent.rmdir()
+    except OSError:
+        pass
+
+    # 5. Verify nothing was lost: compare a full file listing of the old box against the new one.
+    new_text = _inventory(new_sandbox, extra_paths=kits.volume_paths(plan.mixins))
+    moved_home = ("/root", "/home/agent") if convert else None
+    diff = inventory.compare(old_text, new_text, moved_home=moved_home)
+    report_path = paths.state_dir() / f"recreate-{new_name}-{stamp}.txt"
+    _write_report(report_path, old_name, new_sandbox, diff, report, convert)
+    for line in inventory.render(diff):
+        (console.warn if not diff.clean else console.info)("   " + line)
+    refs = sorted({ln[4:] for ln in report if ln.startswith("REF ")})
+    if refs:
+        console.warn(f"   {len(refs)} moved file(s) still mention '/root/' and may need editing (see the report).")
+    console.info(f"   full comparison written to {report_path}")
+    console.step(f"Done. '{new_sandbox}' is ready and '{old_name}' is untouched. "
+                 f"When you are satisfied, remove the old one with 'sbx rm {old_name}'.")
+    return _finish(config, plan, attach)
+
+
+def _write_report(path: Path, old_name: str, new_name: str, diff, move_report: List[str], converted: bool) -> None:
+    """Writes the complete before/after comparison and move log for the person to review."""
+    kept = [ln[5:] for ln in move_report if ln.startswith("KEPT ")]
+    refs = sorted({ln[4:] for ln in move_report if ln.startswith("REF ")})
+    lines = [f"recreate --as report: {old_name} -> {new_name}", ""]
+    lines.append("Session user converted from root to agent." if converted else "Old sandbox already ran as agent.")
+    if converted:
+        lines.append("The old root home was moved into /home/agent.")
+        if kept:
+            lines += ["", f"Existing agent files kept beside the moved ones ({len(kept)}):"] + [f"   {k}" for k in kept]
+        if refs:
+            lines += ["", f"Moved files that still mention /root/ ({len(refs)}):"] + [f"   {r}" for r in refs]
+    lines += ["", "File comparison (old sandbox vs new sandbox):"] + inventory.render(diff, full=True)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass

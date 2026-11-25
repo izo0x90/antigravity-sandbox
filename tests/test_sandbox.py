@@ -210,6 +210,14 @@ class TestSandboxes(unittest.TestCase):
 
 
 class TestTemplatesAndSecrets(unittest.TestCase):
+    def test_template_save_with_output_and_load_argv(self):
+        fake = FakeSbx()
+        with patch(RUN, fake), captured_console():
+            sandbox.save_template("agy-sandbox-demo", "agy-sandbox-demo:recreate-1", output="/tmp/s.tar")
+            sandbox.load_template("/tmp/s2.tar")
+        self.assertEqual(fake.calls, [["sbx", "template", "save", "agy-sandbox-demo", "agy-sandbox-demo:recreate-1", "--output", "/tmp/s.tar"],
+                                      ["sbx", "template", "load", "/tmp/s2.tar"]])
+
     def test_templates_both_shapes(self):
         for doc in (json.dumps({"images": [{"repository": "r", "tag": "t"}]}), json.dumps([{"repository": "r", "tag": "t"}])):
             with patch(RUN, FakeSbx().respond("sbx", "template", "ls", stdout=doc)):

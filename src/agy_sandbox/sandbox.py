@@ -332,9 +332,15 @@ def list_templates() -> List[dict]:
     return _items(_json(["template", "ls"]), "images", "template ls")
 
 
-def save_template(name: str, tag: str) -> None:
-    """Snapshots a (stopped) sandbox's whole filesystem as a template image."""
-    _passthrough(["template", "save", name, tag], what="template save", timeout=LONG_TIMEOUT)
+def save_template(name: str, tag: str, output: Optional[str] = None) -> None:
+    """Snapshots a (stopped) sandbox's whole filesystem as a template image, optionally also to an OCI tar."""
+    argv = ["template", "save", name, tag] + (["--output", output] if output else [])
+    _passthrough(argv, what="template save", timeout=LONG_TIMEOUT)
+
+
+def load_template(path: str) -> None:
+    """Loads an OCI image tar (see snapshot.py) into sbx's image store under the tag it carries."""
+    _passthrough(["template", "load", path], what="template load", timeout=LONG_TIMEOUT)
 
 
 def remove_template(tag: str) -> None:

@@ -199,8 +199,12 @@ def upgrade_command(args: argparse.Namespace) -> None:
 
 def recreate_command(args: argparse.Namespace) -> None:
     config = load_or_fail()
-    confirm_destroy(config, args.yes)   # the snapshot path still stops and removes the sandbox
     apply_session_flags(config, args)
+    if args.as_name:
+        # Side by side: the old sandbox is read, never removed, so there is nothing to confirm.
+        exit_with(upgrade.recreate_as(config, cwd=Path.cwd(), new_name=args.as_name, attach=not args.no_attach))
+        return
+    confirm_destroy(config, args.yes)   # in-place recreate still stops and removes the sandbox
     exit_with(upgrade.recreate(config, cwd=Path.cwd(), attach=not args.no_attach))
 
 
@@ -294,6 +298,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=upgrade_command)
 
     p = sub.add_parser("recreate", help="Rebuild the sandbox from a snapshot of itself so removed kits, changed kit arguments or a changed login mode apply without losing its contents")
+    p.add_argument("--as", dest="as_name", metavar="NAME",
+                   help="Build a new sandbox called NAME beside this one instead of replacing it; the original is left untouched. "
+                        "A sandbox built by agy-sandbox 0.5 (root sessions) is converted to the agent user in the copy.")
     _add_session_options(p)
     _add_yes_option(p)
     p.set_defaults(func=recreate_command)

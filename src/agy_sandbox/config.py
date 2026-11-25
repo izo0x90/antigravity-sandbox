@@ -90,6 +90,10 @@ class AgyConfig:
     def sandbox_name(self) -> str:
         return sandbox_name(self.project_name, self.profile)
 
+    def sandbox_name_for(self, project_name: str) -> str:
+        """The sandbox name a given project name would produce under this profile."""
+        return sandbox_name(project_name, self.profile)
+
     @property
     def agent_spec(self) -> AgentSpec:
         return AGENT_SPECS.get(self.agent, AGENT_SPECS[AGENT_AGY])

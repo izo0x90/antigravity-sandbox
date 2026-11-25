@@ -10,6 +10,7 @@ from agy_sandbox.config import AgyConfig, HostBrowserConfig
 from agy_sandbox.errors import AgyError, SandboxError, UpgradeRefused
 from agy_sandbox.kits import KitRef
 from agy_sandbox.sandbox import SandboxInfo, SbxVersion
+from agy_sandbox.snapshot import SnapshotInfo  # noqa: F401
 from agy_sandbox.workload import WorkloadRef
 
 from tests.support import FakeSbx, captured_console, isolated_state, messages_containing
@@ -270,3 +271,60 @@ class TestRecreate(UpgradeBase):
         plan = m["create_from_template"].call_args[0][0]
         self.assertEqual((plan.clone, plan.workspace), (True, "/old"))
         self.assertTrue(messages_containing(self.out, "no saved plan"))
+
+
+class TestRecreateAs(UpgradeBase):
+    def _exec(self, name, script, user=None):
+        import subprocess
+        if "find / -xdev" in script:              # an inventory listing
+            out = "f 5 /root/.toolrc\nf 9 /root/.claude/session\n" if name == "agy-sandbox-demo" \
+                  else "f 5 /home/agent/.toolrc\nf 9 /home/agent/.claude/session\n"
+        elif "migrate" in script or "MOVED" in script or "move_entry" in script:   # the home-move script
+            out = "MOVED .toolrc\nMOVED .claude\nKEPT .bashrc.pre-migration\nREF /home/agent/.toolrc\n"
+        else:
+            out = ""
+        return subprocess.CompletedProcess(args=[name], returncode=0, stdout=out, stderr="")
+
+    def run_as(self, cfg, *, new="demo-v2", old_user="root", exists_new=False):
+        self.save(config(clone=True))
+        from agy_sandbox.snapshot import SnapshotInfo as SI
+        patches = {
+            "exists": patch(SBX + "exists", side_effect=lambda n: n == "agy-sandbox-demo" or (exists_new and n == f"agy-sandbox-{new}")),
+            "exec_script": patch(SBX + "exec_script", side_effect=self._exec),
+            "copy_from": patch(SBX + "copy_from"), "copy_to": patch(SBX + "copy_to"), "stop": patch(SBX + "stop"),
+            "save_template": patch(SBX + "save_template"), "load_template": patch(SBX + "load_template"),
+            "remove_template": patch(SBX + "remove_template"),
+            "create_from_template": patch(SBX + "create_from_template"), "remove": patch(SBX + "remove"),
+            "insp": patch("agy_sandbox.snapshot.inspect", return_value=SI(user=old_user, ref="x:y", layers=3)),
+            "rw": patch("agy_sandbox.snapshot.rewrite", return_value=SI(user="agent", ref="x:y", layers=3)),
+        }
+        started = {k: p.start() for k, p in patches.items()}
+        try:
+            code = upgrade.recreate_as(cfg, Path(self.cwd.name), new_name=new)
+        finally:
+            for p in patches.values():
+                p.stop()
+        return code, started
+
+    def test_builds_new_box_converts_user_and_never_removes_the_old(self):
+        code, m = self.run_as(config(clone=True))
+        self.assertEqual(code, 0)
+        m["remove"].assert_not_called()                      # the old sandbox is left in place
+        self.assertEqual(m["create_from_template"].call_args[0][0].name, "agy-sandbox-demo-v2")
+        m["load_template"].assert_called_once()
+        self.assertEqual(m["rw"].call_args.kwargs["user"], "agent")   # root -> agent on the snapshot
+        self.assertIsNotNone(compose.load_plan("agy-sandbox-demo-v2"))
+        self.assertIsNotNone(compose.load_plan("agy-sandbox-demo"))    # old plan still there
+        self.assertTrue(messages_containing(self.out, "is left untouched"))
+        self.assertTrue(messages_containing(self.out, "start as 'agent'"))
+
+    def test_already_agent_box_is_copied_without_a_user_flip(self):
+        code, m = self.run_as(config(clone=True), old_user="agent")
+        self.assertEqual(code, 0)
+        self.assertIsNone(m["rw"].call_args.kwargs["user"])   # retag only, no user change
+        self.assertFalse(messages_containing(self.out, "start as 'agent'"))
+
+    def test_refuses_when_the_target_name_is_taken(self):
+        with self.assertRaises(AgyError) as ctx:
+            self.run_as(config(clone=True), exists_new=True)
+        self.assertIn("already exists", str(ctx.exception))
