@@ -7,8 +7,13 @@
 # exit, and the EXIT trap removes the probe sandbox, its recreate snapshots and
 # the scratch directory either way.
 #
-# Usage: scripts/live-check.sh            (from the repo root, CLI installed in .venv)
-#        KEEP_PROBE=1 scripts/live-check.sh   keeps the probe sandbox when a step fails
+# Run it from a terminal: step 3 (`agy-sandbox upgrade`, which is `sbx kit add`)
+# makes sbx ask you to confirm the network hosts the added kit needs. That prompt
+# is sbx's permission check and this script does not answer it for you.
+#
+# Usage: scripts/live-check.sh                      (repo root, CLI installed in .venv)
+#        KEEP_PROBE=1 scripts/live-check.sh         keep the probe sandbox when a step fails
+#        SKIP_IN_PLACE=1 scripts/live-check.sh      skip step 3 (no terminal available)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 AGY="$PWD/.venv/bin/agy-sandbox"
@@ -25,9 +30,8 @@ cleanup() {
     return
   fi
   sbx rm -f "$NAME" >/dev/null 2>&1 || true
-  sbx template ls --json 2>/dev/null | grep -o "\"$NAME:recreate-[0-9-]*\"\|\"recreate-[0-9-]*\"" | tr -d '"' | sort -u | while read -r tag; do
-    case "$tag" in recreate-*) tag="$NAME:$tag";; esac
-    sbx template rm -f "$tag" >/dev/null 2>&1 || true
+  sbx template ls --json 2>/dev/null | grep -o "\"recreate-[0-9-]*\"" | tr -d '"' | sort -u | while read -r tag; do
+    sbx template rm -f "$NAME:$tag" >/dev/null 2>&1 || true
   done
   rm -rf "$WORK"
   if sbx ls 2>/dev/null | grep -q "$NAME"; then echo "!! probe sandbox still present: sbx rm -f $NAME"; else echo "probe sandbox gone"; fi
@@ -43,11 +47,27 @@ assert_inside() {
   echo "-- $1"
   if ! inside "$2"; then
     echo "-- diagnostics:"
-    inside 'echo "user=$(id -un) home=$HOME pwd=$PWD"; echo "PATH=$PATH"; for d in /usr/local/bin /home/agent/.local/bin; do echo "## $d"; ls -la "$d" 2>&1 | head -20; done; echo "## claude:"; command -v claude; ls -la /home/agent 2>&1 | head -30' || true
+    inside 'echo "user=$(id -un) home=$HOME pwd=$PWD"; echo "PATH=$PATH"; for d in /usr/local/bin /home/agent/.local/bin; do echo "## $d"; ls -la "$d" 2>&1 | head -20; done; ls -la /home/agent 2>&1 | head -30' || true
     fail "$1"
   fi
 }
-agy() { (cd "$WORK/proj" && "$AGY" "$@" --no-attach </dev/null) || fail "agy-sandbox $* exited non-zero"; }
+# agy ARGS...: the CLI on the scratch project, without attaching; the terminal (if any)
+# stays connected so sbx's own prompts reach the person running this.
+agy() { (cd "$WORK/proj" && "$AGY" "$@" --no-attach) || fail "agy-sandbox $* exited non-zero"; }
+# write_config "KITS" AUTH_MODE: the scratch project's agy.yaml
+write_config() {
+  cat > "$WORK/proj/agy.yaml" <<EOF
+profile: default
+project_name: $PROBE
+agent: claude
+kits: [$1]
+auth_mode: $2
+clone: true
+build_args: {PYTHON_VERSION: "3.12"}
+setup_scripts: ["echo setup-ran > /home/agent/setup-marker", "id -un > /home/agent/setup-user"]
+env: [PROBE_ENV=1]
+EOF
+}
 
 step "0. sbx version, login and builder"
 sbx version
@@ -57,17 +77,7 @@ sbx kit builder status || true
 step "1. scratch project: claude + chrome-devtools, PYTHON_VERSION, one setup script"
 mkdir -p "$WORK/proj"
 (cd "$WORK/proj" && git init -q && echo hello > README.md && git add . && git -c user.name=p -c user.email=p@x commit -qm init)
-cat > "$WORK/proj/agy.yaml" <<EOF
-profile: default
-project_name: $PROBE
-agent: claude
-kits: [claude, chrome-devtools]
-auth_mode: sandbox-local
-clone: true
-build_args: {PYTHON_VERSION: "3.12"}
-setup_scripts: ["echo setup-ran > /home/agent/setup-marker", "id -un > /home/agent/setup-user"]
-env: [PROBE_ENV=1]
-EOF
+write_config "claude, chrome-devtools" sandbox-local
 
 step "2. up: sbx builds the workload (gate 1), hooks run as agent, no proxy placeholders"
 agy up
@@ -79,19 +89,28 @@ assert_inside "claude is the agent's native install" '[ "$(command -v claude)" =
 assert_inside "no API key placeholders"          '! env | grep -qE "_API_KEY="'
 assert_inside "markers for later gates"          'echo rootfs-marker > /home/agent/rootfs-marker && mkdir -p /home/agent/.claude/projects && echo s > /home/agent/.claude/projects/marker'
 
-step "3. upgrade: add codex in place (kit add); binary arrives, filesystem untouched"
-sed -i.bak 's/kits: \[claude, chrome-devtools\]/kits: [claude, chrome-devtools, codex]/' "$WORK/proj/agy.yaml"
-agy upgrade
-assert_inside "codex installed by kit add"       'command -v codex && codex --version'
-assert_inside "rootfs marker survived upgrade"   '[ "$(cat /home/agent/rootfs-marker)" = rootfs-marker ]'
+KITS_NOW="claude, chrome-devtools"
+if [ "${SKIP_IN_PLACE:-}" = 1 ]; then
+  step "3. SKIPPED (SKIP_IN_PLACE=1): in-place upgrade needs a terminal to answer sbx's permission prompt"
+else
+  step "3. upgrade: add codex in place (kit add); binary arrives, filesystem untouched"
+  [ -t 0 ] || echo "-- note: stdin is not a terminal; sbx will refuse its permission prompt (run this script from a terminal, or SKIP_IN_PLACE=1)"
+  write_config "claude, chrome-devtools, codex" sandbox-local
+  agy upgrade
+  assert_inside "codex installed by kit add"       'command -v codex && codex --version'
+  assert_inside "rootfs marker survived upgrade"   '[ "$(cat /home/agent/rootfs-marker)" = rootfs-marker ]'
+  KITS_NOW="claude, chrome-devtools, codex"
+fi
 
 step "3b. upgrade refuses what it cannot do in place (kit removal) and names recreate"
-sed -i.bak 's/kits: \[claude, chrome-devtools, codex\]/kits: [claude, codex]/' "$WORK/proj/agy.yaml"
+write_config "claude" sandbox-local
 if (cd "$WORK/proj" && "$AGY" upgrade --no-attach </dev/null 2>"$WORK/refusal.txt"); then fail "upgrade should refuse a kit removal"; fi
 grep -q "recreate" "$WORK/refusal.txt" || { cat "$WORK/refusal.txt"; fail "refusal does not point at recreate"; }
 echo "-- refused as expected: $(grep -m1 'kit removed' "$WORK/refusal.txt" || head -1 "$WORK/refusal.txt")"
+write_config "$KITS_NOW" sandbox-local
 
 step "4. recreate after removing a kit (gate 2): rootfs, volume and clone survive"
+write_config "claude" sandbox-local
 agy recreate -y
 assert_inside "rootfs marker survived recreate"  '[ "$(cat /home/agent/rootfs-marker)" = rootfs-marker ]'
 assert_inside "claude volume survived recreate"  '[ "$(cat /home/agent/.claude/projects/marker)" = s ]'
@@ -100,13 +119,13 @@ assert_inside "session user still agent"         '[ "$(id -un)" = agent ]'
 sbx template ls | grep -q "$NAME.*recreate-" || fail "recreate snapshot not kept"
 
 step "5. recreate to proxy-managed (login mode change): credential kits attached"
-sed -i.bak 's/auth_mode: sandbox-local/auth_mode: proxy-managed/' "$WORK/proj/agy.yaml"
+write_config "claude" proxy-managed
 agy recreate -y
-assert_inside "credential mode surfaced"         'env | grep -qE "^SBX_CRED_(ANTHROPIC|OPENAI)_MODE="'
+assert_inside "credential mode surfaced"         'env | grep -qE "^SBX_CRED_ANTHROPIC_MODE="'
 assert_inside "rootfs marker survived again"     '[ "$(cat /home/agent/rootfs-marker)" = rootfs-marker ]'
 
 step "6. down removes the sandbox"
-(cd "$WORK/proj" && "$AGY" down -y </dev/null) || fail "down exited non-zero"
+(cd "$WORK/proj" && "$AGY" down -y) || fail "down exited non-zero"
 sbx ls | grep -q "$NAME" && fail "sandbox still present after down"
 STATUS=0
-echo; echo "all live gates passed"
+echo; echo "all live gates passed${SKIP_IN_PLACE:+ (step 3 skipped)}"

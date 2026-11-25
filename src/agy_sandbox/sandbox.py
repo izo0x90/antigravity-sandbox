@@ -84,11 +84,15 @@ def _run(argv: Sequence[str], *, timeout: Optional[int]) -> subprocess.Completed
 
 
 def _passthrough(argv: Sequence[str], *, what: str, timeout: Optional[int]) -> None:
-    """A long sbx call whose output the user should watch (builds, snapshots): nothing captured."""
+    """
+    A long sbx call whose output the user should watch (builds, snapshots): nothing captured,
+    and the terminal stays attached because sbx may ask the user to confirm a widened
+    permission (`kit add` with new network rules). Without a terminal sbx fails instead.
+    """
     cmd = ["sbx", *argv]
     console.command(cmd)
     try:
-        res = subprocess.run(cmd, stdin=subprocess.DEVNULL, timeout=timeout)
+        res = subprocess.run(cmd, timeout=timeout)
     except FileNotFoundError:
         raise SandboxUnavailable(NOT_INSTALLED, hint=NOT_INSTALLED_HINT, command=cmd)
     except subprocess.TimeoutExpired:

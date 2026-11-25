@@ -156,7 +156,7 @@ class TestSandboxes(unittest.TestCase):
             "--kit", "/pkg/kits/claude", "--kit", "docker.io/sbx/playwright:1", "--kit-arg", "chrome-host.host_port=9222",
             "/state/kits/agy-sandbox-demo/workload", "/w",
         ]])
-        self.assertIs(fake.kwargs[0]["stdin"], subprocess.DEVNULL)
+        self.assertNotIn("stdin", fake.kwargs[0])   # sbx may prompt to confirm permissions
         self.assertNotIn("stdout", fake.kwargs[0])
 
     def test_create_failure_is_a_sandbox_error(self):
