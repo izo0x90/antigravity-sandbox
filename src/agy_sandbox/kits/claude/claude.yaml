@@ -1,7 +1,7 @@
 # syntax=docker/sandbox-kit:3
-# Claude Code for agy-sandbox. The binary overlay is Docker's published claude
-# mixin (see claude.dockerfile); this descriptor replaces Docker's so that no
-# credential is declared here. `claude /login` inside the sandbox holds the real
+# Claude Code for agy-sandbox. The overlay installs Claude Code with Anthropic's
+# native installer as the agent user (see claude.dockerfile), so `claude update`
+# works inside the sandbox; this descriptor declares no credential. `claude /login` inside the sandbox holds the real
 # credential by default; the claude-credentials kit is attached for proxy-managed
 # logins, and the settings hook then sees SBX_CRED_ANTHROPIC_MODE != none.
 schemaVersion: "3"
@@ -12,6 +12,11 @@ version: "1.0.0"
 provides: ["claude"]
 
 args:
+  version:
+    default: latest
+    pattern: '^(latest|stable|[0-9]+\.[0-9]+\.[0-9]+)$'
+    description: Claude Code release to install (latest, stable or x.y.z); the sandbox auto-updates from there
+    buildArg: VERSION
   IS_SANDBOX:
     default: "1"
     env: IS_SANDBOX

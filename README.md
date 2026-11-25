@@ -162,7 +162,7 @@ prompt. Both exist for scripts such as `scripts/live-check.sh`.
 
 ## Agent harnesses
 
-| Identifier    | Display name            | Kit (binary overlay)                               | Credentials kit (proxy-managed) |
+| Identifier    | Display name            | Kit (overlay)                                      | Credentials kit (proxy-managed) |
 | :------------ | :---------------------- | :------------------------------------------------- | :------------------------------ |
 | `agy`         | Google Antigravity      | `agy` on `docker.io/sbx/antigravity-mixin`         | `agy-credentials`: `google`, `antigravity` (OAuth) |
 | `claude`      | Anthropic Claude Code   | `claude` on `docker.io/sbx/claude-mixin`           | `claude-credentials`: `anthropic` (API key or OAuth) |
@@ -172,8 +172,11 @@ prompt. Both exist for scripts such as `scripts/live-check.sh`.
 | `prime-agent` | Prime Agent (RLM)       | `prime-agent` (own overlay)                        | none |
 | `shell`       | Interactive Shell       | none                                               | none |
 
-Agent kits never declare credentials themselves; the binaries come from Docker's published mixin
-images (used as the kit's `FROM`), so they track Docker's releases without a build pipeline here.
+Agent kits never declare credentials themselves. Claude Code is installed by Anthropic's native
+installer as the `agent` user, so `claude update` and auto-updates work inside the sandbox; codex,
+opencode and agy are copied out of Docker's published mixin images at build time, so they track
+Docker's releases without a build pipeline here. Pin Claude Code with `--kit-arg claude.version=x.y.z`
+(sbx) or the kit's `version` argument.
 
 ## Bundled mixin kits
 

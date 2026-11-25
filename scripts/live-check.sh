@@ -8,6 +8,7 @@
 # the scratch directory either way.
 #
 # Usage: scripts/live-check.sh            (from the repo root, CLI installed in .venv)
+#        KEEP_PROBE=1 scripts/live-check.sh   keeps the probe sandbox when a step fails
 set -euo pipefail
 cd "$(dirname "$0")/.."
 AGY="$PWD/.venv/bin/agy-sandbox"
@@ -19,6 +20,10 @@ STATUS=1
 
 cleanup() {
   echo; echo "== cleanup"
+  if [ "${KEEP_PROBE:-}" = 1 ] && [ "$STATUS" -ne 0 ]; then
+    echo "KEEP_PROBE=1: leaving $NAME and $WORK for inspection (remove with: sbx rm -f $NAME; rm -rf $WORK)"
+    return
+  fi
   sbx rm -f "$NAME" >/dev/null 2>&1 || true
   sbx template ls --json 2>/dev/null | grep -o "\"$NAME:recreate-[0-9-]*\"\|\"recreate-[0-9-]*\"" | tr -d '"' | sort -u | while read -r tag; do
     case "$tag" in recreate-*) tag="$NAME:$tag";; esac
@@ -34,7 +39,14 @@ step()   { printf '\n== %s\n' "$*"; }
 fail()   { echo "!! $*" >&2; exit 1; }
 inside() { sbx exec "$NAME" sh -c "$1"; }
 # assert_inside DESCRIPTION SCRIPT: the script must exit 0 inside the sandbox
-assert_inside() { echo "-- $1"; inside "$2" || fail "$1"; }
+assert_inside() {
+  echo "-- $1"
+  if ! inside "$2"; then
+    echo "-- diagnostics:"
+    inside 'echo "user=$(id -un) home=$HOME pwd=$PWD"; echo "PATH=$PATH"; for d in /usr/local/bin /home/agent/.local/bin; do echo "## $d"; ls -la "$d" 2>&1 | head -20; done; echo "## claude:"; command -v claude; ls -la /home/agent 2>&1 | head -30' || true
+    fail "$1"
+  fi
+}
 agy() { (cd "$WORK/proj" && "$AGY" "$@" --no-attach </dev/null) || fail "agy-sandbox $* exited non-zero"; }
 
 step "0. sbx version, login and builder"
@@ -63,7 +75,7 @@ sbx ls | grep -q "$NAME" || fail "sandbox $NAME not listed after up"
 assert_inside "session user is agent"            '[ "$(id -un)" = agent ] && [ "$HOME" = /home/agent ]'
 assert_inside "setup script ran, as agent"       '[ "$(cat /home/agent/setup-marker)" = setup-ran ] && [ "$(cat /home/agent/setup-user)" = agent ]'
 assert_inside "python from the workload build"   'python --version'
-assert_inside "claude on PATH under /home/agent" 'command -v claude && command -v claude | grep -q ^/home/agent/ && claude --version'
+assert_inside "claude is the agent's native install" '[ "$(command -v claude)" = /home/agent/.local/bin/claude ] && [ -L /home/agent/.local/bin/claude ] && readlink -f /home/agent/.local/bin/claude | grep -q ^/home/agent/.local/share/claude/versions/ && [ "$(stat -c %U /home/agent/.local/bin/claude)" = agent ] && claude --version'
 assert_inside "no API key placeholders"          '! env | grep -qE "_API_KEY="'
 assert_inside "markers for later gates"          'echo rootfs-marker > /home/agent/rootfs-marker && mkdir -p /home/agent/.claude/projects && echo s > /home/agent/.claude/projects/marker'
 

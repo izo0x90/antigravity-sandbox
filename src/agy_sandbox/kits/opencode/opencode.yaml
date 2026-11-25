@@ -1,6 +1,6 @@
 # syntax=docker/sandbox-kit:3
-# OpenCode for agy-sandbox. The binary overlay is Docker's published opencode mixin
-# (see opencode.dockerfile); this descriptor declares no credential. `opencode auth
+# OpenCode for agy-sandbox. The overlay copies OpenCode out of Docker's published
+# opencode mixin (see opencode.dockerfile); this descriptor declares no credential. `opencode auth
 # login` inside the sandbox holds credentials by default; the opencode-credentials
 # kit is attached for proxy-managed logins.
 schemaVersion: "3"

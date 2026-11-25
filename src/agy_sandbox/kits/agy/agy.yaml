@@ -1,5 +1,5 @@
 # syntax=docker/sandbox-kit:3
-# Google Antigravity (agy) for agy-sandbox. The binary overlay is Docker's
+# Google Antigravity (agy) for agy-sandbox. The overlay copies agy out of Docker's
 # published antigravity mixin (see agy.dockerfile); this descriptor replaces
 # Docker's so that:
 #   - no credential is declared here: sign-in happens inside the sandbox by

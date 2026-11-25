@@ -1,6 +1,6 @@
 # syntax=docker/sandbox-kit:3
-# OpenAI Codex CLI for agy-sandbox. The binary overlay is Docker's published codex
-# mixin (see codex.dockerfile); this descriptor declares no credential. Codex logs
+# OpenAI Codex CLI for agy-sandbox. The overlay copies the CLI out of Docker's
+# published codex mixin (see codex.dockerfile); this descriptor declares no credential. Codex logs
 # in inside the sandbox by default; the codex-credentials kit is attached for
 # proxy-managed logins, and the install hook then sees SBX_CRED_OPENAI_MODE != none.
 schemaVersion: "3"
