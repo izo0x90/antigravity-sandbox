@@ -86,7 +86,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         display_name="Oh My Pi Harness",
         cli_binary="omp",
         read_only_args=("-p", "{prompt}", "--tools=read,grep,glob"),
-        session_files=(".omp/auth.json", ".omp/agent/auth.json"),   # upstream pi stores tokens in <dir>/agent/auth.json
+        session_files=(".omp/agent",),   # omp writes its sessions here once used; the kit pre-creates ~/.omp itself
     ),
     AGENT_PRIME_AGENT: AgentSpec(
         identifier=AGENT_PRIME_AGENT,
@@ -95,7 +95,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         read_only_args=("-p", "--no-session", "--no-tools", "{prompt}"),
         secret_services=("prime", "anthropic", "openai", "google"),
         signature_files=("AGENTS.md", ".prime"),
-        session_files=(".prime",),
+        session_files=(".prime/agent",),   # written once used; the kit pre-creates ~/.prime itself
     ),
     AGENT_SHELL: AgentSpec(
         identifier=AGENT_SHELL,

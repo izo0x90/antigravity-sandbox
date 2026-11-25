@@ -16,9 +16,9 @@ def completed(stdout="", code=0, stderr=""):
 class TestGuardian(unittest.TestCase):
     def test_script_covers_every_agent_and_git_only_for_clones(self):
         script = guardian.scan_script(check_git=False)
-        for path in ("/home/agent/.gemini/antigravity-cli", "/home/agent/.claude/.credentials.json", "/home/agent/.codex/auth.json", "/home/agent/.prime"):
+        for path in ("/home/agent/.gemini/antigravity-cli", "/home/agent/.claude/.credentials.json", "/home/agent/.codex/auth.json", "/home/agent/.prime/agent", "/home/agent/.omp/agent"):
             self.assertIn(path, script)
-        for path in ("/home/agent/.gemini'", "/home/agent/.claude.json", "/home/agent/.omp'"):   # pre-created in every sandbox
+        for path in ("/home/agent/.gemini'", "/home/agent/.claude.json", "/home/agent/.omp'", "/home/agent/.prime'"):   # pre-created in every sandbox
             self.assertNotIn(path, script)
         self.assertNotIn("git status", script)
         self.assertIn("git status --porcelain", guardian.scan_script(check_git=True))
