@@ -21,7 +21,8 @@ class TestRender(unittest.TestCase):
         types = [c["type"] for c in desc["capabilities"]]
         self.assertEqual(types, ["com.docker.sandbox/sbx@1", "com.docker.sandbox/lifecycle@1"])
         hook = desc["capabilities"][1]["config"]["install"][0]
-        self.assertIn("uv sync\nmake setup\n", hook["command"])
+        self.assertEqual(hook["command"][:2], ["bash", "-lc"])   # login shell: /etc/profile.d supplies the toolchain env
+        self.assertIn("uv sync\nmake setup\n", hook["command"][2])
         self.assertEqual(hook["env"], ["WORKSPACE_DIR"])
         self.assertEqual(hook["user"], "agent")
 

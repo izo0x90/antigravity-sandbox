@@ -85,7 +85,7 @@ base_image: docker.io/sbx/shell-image:latest   # optional; the workload's FROM
 build_args:                    # ARGs of Dockerfile.agy / the default Dockerfile
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "20"
-setup_scripts:                 # run once inside the VM when the sandbox is created
+setup_scripts:                 # run once at creation, as the agent user, in a login shell, in the workspace
   - uv sync
 env:                           # applied to every session
   - ENVIRONMENT=development

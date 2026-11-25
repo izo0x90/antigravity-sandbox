@@ -83,7 +83,9 @@ def render_descriptor(config: AgyConfig) -> dict:
             "type": "com.docker.sandbox/lifecycle@1",
             "config": {
                 "install": [{
-                    "command": script,
+                    # A login shell: hooks get only PATH and HOME from sbx, and /etc/profile.d
+                    # carries the toolchain environment the Dockerfile set (see Dockerfile.default).
+                    "command": ["bash", "-lc", script],
                     "user": "agent",
                     "env": ["WORKSPACE_DIR"],
                     "description": "agy.yaml setup_scripts",
