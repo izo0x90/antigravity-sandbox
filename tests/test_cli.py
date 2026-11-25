@@ -165,6 +165,24 @@ class TestLifecycleCommands(InTempDir):
             self.assertEqual(main(["down"]), 0)
         down.assert_called_once()
 
+    def test_yes_skips_the_prompt_and_no_attach_reaches_the_engine(self):
+        with patch("agy_sandbox.cli.check_for_unsaved_sandbox_work", return_value=True), \
+             patch("builtins.input", side_effect=AssertionError("must not prompt")), \
+             patch("agy_sandbox.cli.engine.down") as down, patch("agy_sandbox.cli.engine.up", return_value=0) as up, \
+             patch("agy_sandbox.cli.upgrade.recreate", return_value=0) as rc, patch("agy_sandbox.cli.upgrade.upgrade", return_value=0) as ug, \
+             patch("sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(main(["down", "-y"]), 0)
+            self.assertEqual(main(["up", "--rebuild", "--yes", "--no-attach"]), 0)
+            self.assertEqual(main(["recreate", "-y", "--no-attach"]), 0)
+            self.assertEqual(main(["upgrade", "--no-attach"]), 0)
+        down.assert_called_once()
+        self.assertFalse(up.call_args.kwargs["attach"])
+        self.assertFalse(rc.call_args.kwargs["attach"])
+        self.assertFalse(ug.call_args.kwargs["attach"])
+        with patch("agy_sandbox.cli.engine.up", return_value=0) as up:
+            self.assertEqual(main(["up"]), 0)
+        self.assertTrue(up.call_args.kwargs["attach"])
+
     def test_sandbox_errors_are_rendered_with_hint_not_raised(self):
         with patch("agy_sandbox.cli.engine.up", side_effect=SandboxError("sandboxd is down", hint="sbx daemon start")), \
              patch("sys.stderr", new_callable=io.StringIO) as err:

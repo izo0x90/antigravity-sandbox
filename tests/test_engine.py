@@ -78,6 +78,16 @@ class TestResume(unittest.TestCase):
         compose.save_plan(plan)
         return plan
 
+    def test_no_attach_does_the_work_and_prints_how_to_attach(self):
+        cfg = AgyConfig(project_name="demo", kits=["claude"], env=["A=1"])
+        with isolated_state(), tempfile.TemporaryDirectory() as cwd, \
+             preflight(False)[0], preflight(False)[1], patch(SBX + "create") as create, patch(SBX + "attach") as attach, \
+             patch(SBX + "stored_secret_services", return_value=set()), captured_console() as out:
+            self.assertEqual(engine.up(cfg, cwd=Path(cwd), attach=False), 0)
+        create.assert_called_once()
+        attach.assert_not_called()
+        self.assertTrue(messages_containing(out, "Attach with: agy-sandbox up"))
+
     def test_resume_reconciles_ports_and_attaches_without_creating(self):
         cfg = config(ports=["3000:3000"], env=["A=1"])
         with isolated_state(), tempfile.TemporaryDirectory() as cwd, captured_console() as out, \

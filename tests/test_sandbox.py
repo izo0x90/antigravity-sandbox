@@ -191,10 +191,10 @@ class TestSandboxes(unittest.TestCase):
         self.assertEqual(fake.verbs(), ["ls"])
 
     def test_publish_ports_warns_instead_of_failing(self):
-        fake = FakeSbx().fail("sbx", "ports")
+        fake = FakeSbx().fail("sbx", "port")
         with patch(RUN, fake), captured_console() as out:
             sandbox.publish_ports("agy-sandbox-demo", ["3000:3000", "8080:80"])
-        self.assertEqual(fake.calls, [["sbx", "ports", "agy-sandbox-demo", "--publish", "3000:3000", "--publish", "8080:80"]])
+        self.assertEqual(fake.calls, [["sbx", "port", "publish", "agy-sandbox-demo", "3000:3000", "8080:80"]])
         self.assertTrue(messages_containing(out, "published ports may be out of date"))
         fake = FakeSbx()
         with patch(RUN, fake):

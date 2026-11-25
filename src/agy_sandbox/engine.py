@@ -60,7 +60,15 @@ def desired_plan(config: AgyConfig, cwd: Path, *, write: bool = True) -> Sandbox
 # ---------------------------------------------------------------------------
 # up
 # ---------------------------------------------------------------------------
-def resume(config: AgyConfig, cwd: Path) -> int:
+def _session(name: str, env, attach: bool) -> int:
+    """Attaches to the sandbox, or says how to when the caller only wanted the work done."""
+    if not attach:
+        console.hint(f"Sandbox '{name}' is ready. Attach with: agy-sandbox up")
+        return 0
+    return sandbox.attach(name, env=env)
+
+
+def resume(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
     name = config.sandbox_name
     saved = compose.load_plan(name)
     if saved is None:
@@ -74,10 +82,10 @@ def resume(config: AgyConfig, cwd: Path) -> int:
     if config.host_browser.enabled:
         host_browser_for(config).start()
     console.step(f"Resuming sandbox '{name}'...")
-    return sandbox.attach(name, env=config.env)
+    return _session(name, config.env, attach)
 
 
-def create(config: AgyConfig, cwd: Path) -> int:
+def create(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
     plan = desired_plan(config, cwd)
     report_missing_secrets(config)
     console.step(f"Creating sandbox '{plan.name}' ({config.auth_mode} logins); sbx builds the project image first...")
@@ -85,21 +93,21 @@ def create(config: AgyConfig, cwd: Path) -> int:
     compose.save_plan(plan)
     if config.host_browser.enabled:
         host_browser_for(config).start()
-    return sandbox.attach(plan.name, env=plan.env)
+    return _session(plan.name, plan.env, attach)
 
 
-def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path) -> int:
-    """Creates or resumes the sandbox and attaches. Returns the exit code of the attached session."""
+def up(config: AgyConfig, *, rebuild: bool = False, cwd: Path, attach: bool = True) -> int:
+    """Creates or resumes the sandbox and attaches. Returns the exit code of the attached session (0 without attach)."""
     compose.validate_host_browser(config)
     sandbox.require()
     name = config.sandbox_name
     if sandbox.exists(name):
         if not rebuild:
-            return resume(config, cwd)
+            return resume(config, cwd, attach=attach)
         sandbox.remove(name)
         compose.delete_plan(name)
         workload.delete(name)
-    return create(config, cwd)
+    return create(config, cwd, attach=attach)
 
 
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from . import compose, console, kits, paths, sandbox, workload
 from .compose import SandboxPlan, kit_args_for_kit
 from .config import AgyConfig
 from .constants import MIN_SBX_VERSION_FOR_UPGRADE, RECREATE_TAG_PREFIX, SBX_UPGRADE_HINT
-from .engine import desired_plan, host_browser_for, report_missing_secrets
+from .engine import _session, desired_plan, host_browser_for, report_missing_secrets
 from .errors import AgyError, SandboxError, UpgradeRefused
 
 
@@ -35,18 +35,18 @@ def _remedy_hint(drift) -> str:
     return "Run 'agy-sandbox recreate' to apply it while keeping the sandbox's contents."
 
 
-def _finish(config: AgyConfig, plan: SandboxPlan) -> int:
+def _finish(config: AgyConfig, plan: SandboxPlan, attach: bool) -> int:
     compose.save_plan(plan)
     report_missing_secrets(config)
     if config.host_browser.enabled:
         host_browser_for(config).start()
-    return sandbox.attach(plan.name, env=plan.env)
+    return _session(plan.name, plan.env, attach)
 
 
 # ---------------------------------------------------------------------------
 # upgrade: in place
 # ---------------------------------------------------------------------------
-def upgrade(config: AgyConfig, cwd: Path) -> int:
+def upgrade(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
     compose.validate_host_browser(config)
     version = sandbox.require()
     if version.as_tuple < MIN_SBX_VERSION_FOR_UPGRADE:
@@ -81,7 +81,7 @@ def upgrade(config: AgyConfig, cwd: Path) -> int:
     if not drift.added:
         console.info("   kits unchanged; applying env and ports")
     sandbox.publish_ports(name, wanted.ports)
-    return _finish(config, wanted)
+    return _finish(config, wanted, attach)
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ def carry_paths(saved: SandboxPlan, wanted: SandboxPlan) -> List[str]:
     return carry
 
 
-def recreate(config: AgyConfig, cwd: Path) -> int:
+def recreate(config: AgyConfig, cwd: Path, *, attach: bool = True) -> int:
     compose.validate_host_browser(config)
     sandbox.require()
     name = config.sandbox_name
@@ -177,7 +177,7 @@ def recreate(config: AgyConfig, cwd: Path) -> int:
         if (repo == name or repo.endswith("/" + name)) and old_tag.startswith(RECREATE_TAG_PREFIX) and old_tag != tag.split(":")[1]:
             sandbox.remove_template(f"{name}:{old_tag}")
     console.step(f"Recreate complete. Snapshot kept as '{tag}' for rollback.")
-    return _finish(config, plan)
+    return _finish(config, plan, attach)
 
 
 def _exec_or_raise(name: str, script: str, user: str) -> None:

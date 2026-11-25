@@ -140,17 +140,20 @@ says so before creating anything. Use `sandbox-local` for that combination.
 - `agy-sandbox auto-init [--analyzer AGENT] [same options as init]`
   Runs a host agent in read-only mode to infer `build_args`, `setup_scripts`, `env` and kits, falling
   back to an offline manifest scanner. Flags you pass win over what the analyzer inferred.
-- `agy-sandbox up [--rebuild] [--host-browser] [-p HOST:SANDBOX]`
+- `agy-sandbox up [--rebuild] [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
   Writes the workload kit, creates the sandbox (sbx builds the image) or resumes it, and attaches.
   On resume it reports how `agy.yaml` differs from the sandbox and which command applies it.
-- `agy-sandbox upgrade [--host-browser] [-p HOST:SANDBOX]`
+- `agy-sandbox upgrade [--host-browser] [-p HOST:SANDBOX] [--no-attach]`
   Applies additions in place: new kits or agents (`sbx kit add`, binaries included), env, ports, the
   host browser. Refuses anything else and names the command to use.
-- `agy-sandbox recreate [--host-browser] [-p HOST:SANDBOX]`
+- `agy-sandbox recreate [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
   Rebuilds the sandbox from a snapshot of its own filesystem, carrying kit volumes and the clone
   workspace across, for removed kits, changed kit arguments and a changed login mode.
-- `agy-sandbox down`
+- `agy-sandbox down [-y]`
   Removes the sandbox after the guardian check, and stops a host browser it started.
+
+`--no-attach` does the work and returns instead of opening the session; `-y` answers the guardian's
+prompt. Both exist for scripts such as `scripts/live-check.sh`.
 - `agy-sandbox agents list` / `agy-sandbox kits list`
 - `agy-sandbox agents add NAME` / `agy-sandbox kits add NAME`
   The same operation: an agent is a kit named after it. Adding `shell` only sets the primary agent.
@@ -196,7 +199,7 @@ tools it built, dotfiles it wrote. `up --rebuild` throws all of that away. The t
 
 | Change in `agy.yaml` | Command | How |
 | :-- | :-- | :-- |
-| kit or agent added, `env`, `ports`, host browser turned on | `upgrade` | `sbx kit add` on the running sandbox; env on the session; `sbx ports` |
+| kit or agent added, `env`, `ports`, host browser turned on | `upgrade` | `sbx kit add` on the running sandbox; env on the session; `sbx port publish` |
 | kit removed, kit argument changed, `auth_mode` changed, host browser turned off | `recreate` | snapshot the filesystem (`sbx template save`), copy kit volumes and the clone workspace out, remove, create from the snapshot, copy back |
 | `Dockerfile.agy`, `build_args`, `setup_scripts`, `clone` | `up --rebuild` | a new image cannot be merged into an existing filesystem |
 

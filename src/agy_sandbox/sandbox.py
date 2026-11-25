@@ -301,12 +301,10 @@ def publish_ports(name: str, ports: Sequence[str]) -> None:
     """Reconciles published ports on an existing sandbox; a failure is reported, not fatal."""
     if not ports:
         return
-    argv = ["ports", name]
-    for port in ports:
-        argv.extend(["--publish", port])
-    res = _run(argv, timeout=REMOVE_CMD_TIMEOUT)
+    # `sbx port publish` (0.54); starts a stopped sandbox before binding, so give it the exec budget.
+    res = _run(["port", "publish", name, *ports], timeout=SANDBOX_EXEC_TIMEOUT)
     if res.returncode != 0:
-        console.warn(f"'sbx ports' exited with code {res.returncode}; published ports may be out of date.")
+        console.warn(f"'sbx port publish' exited with code {res.returncode}; published ports may be out of date.")
 
 
 def kit_add(name: str, kit: KitRef, kit_args: Sequence[str] = ()) -> None:

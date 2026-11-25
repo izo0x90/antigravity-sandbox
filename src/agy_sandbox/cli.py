@@ -60,9 +60,12 @@ def scaffold_dockerfile() -> None:
     console.step(f"Created customizable {LOCAL_DOCKERFILE_NAME}")
 
 
-def confirm_destroy(config: AgyConfig) -> None:
-    """Runs the guardian and asks before anything that destroys the sandbox."""
+def confirm_destroy(config: AgyConfig, assume_yes: bool = False) -> None:
+    """Runs the guardian and asks before anything that destroys the sandbox (`--yes` answers for a script)."""
     if not check_for_unsaved_sandbox_work(config.sandbox_name, clone=config.clone):
+        return
+    if assume_yes:
+        console.warn("Proceeding without confirmation (--yes).")
         return
     try:
         confirm = input("Are you absolutely sure you want to destroy this sandbox and lose these changes? [y/N]: ")
@@ -183,27 +186,27 @@ def auto_init_command(args: argparse.Namespace) -> None:
 def up_command(args: argparse.Namespace) -> None:
     config = load_or_fail()
     if args.rebuild:
-        confirm_destroy(config)
+        confirm_destroy(config, args.yes)
     apply_session_flags(config, args)
-    exit_with(engine.up(config, rebuild=args.rebuild, cwd=Path.cwd()))
+    exit_with(engine.up(config, rebuild=args.rebuild, cwd=Path.cwd(), attach=not args.no_attach))
 
 
 def upgrade_command(args: argparse.Namespace) -> None:
     config = load_or_fail()
     apply_session_flags(config, args)
-    exit_with(upgrade.upgrade(config, cwd=Path.cwd()))
+    exit_with(upgrade.upgrade(config, cwd=Path.cwd(), attach=not args.no_attach))
 
 
 def recreate_command(args: argparse.Namespace) -> None:
     config = load_or_fail()
-    confirm_destroy(config)   # the snapshot path still stops and removes the sandbox
+    confirm_destroy(config, args.yes)   # the snapshot path still stops and removes the sandbox
     apply_session_flags(config, args)
-    exit_with(upgrade.recreate(config, cwd=Path.cwd()))
+    exit_with(upgrade.recreate(config, cwd=Path.cwd(), attach=not args.no_attach))
 
 
 def down_command(args: argparse.Namespace) -> None:
     config = load_or_fail()
-    confirm_destroy(config)
+    confirm_destroy(config, args.yes)
     engine.down(config)
 
 
@@ -259,6 +262,11 @@ def _add_init_options(parser: argparse.ArgumentParser) -> None:
 def _add_session_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host-browser", action="store_true", help="Drive a Chrome on the host from the sandbox")
     parser.add_argument("-p", "--publish", action="append", default=[], help="Publish a sandbox port to the host (e.g. 3000:3000)")
+    parser.add_argument("--no-attach", action="store_true", help="Do the work and return instead of attaching to the sandbox (for scripts)")
+
+
+def _add_yes_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation when the guardian finds unsaved work (for scripts)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -278,6 +286,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("up", help="Create or resume the sandbox and attach to it")
     p.add_argument("--rebuild", action="store_true", help="Recreate the sandbox from scratch (see 'recreate' to keep its contents)")
     _add_session_options(p)
+    _add_yes_option(p)
     p.set_defaults(func=up_command)
 
     p = sub.add_parser("upgrade", help="Apply agy.yaml additions (kits, env, ports, host browser) to the existing sandbox in place")
@@ -286,9 +295,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("recreate", help="Rebuild the sandbox from a snapshot of itself so removed kits, changed kit arguments or a changed login mode apply without losing its contents")
     _add_session_options(p)
+    _add_yes_option(p)
     p.set_defaults(func=recreate_command)
 
     p = sub.add_parser("down", help="Stop and remove the sandbox")
+    _add_yes_option(p)
     p.set_defaults(func=down_command)
 
     agents = sub.add_parser("agents", help="Agent harnesses").add_subparsers(dest="subcommand", required=True)
