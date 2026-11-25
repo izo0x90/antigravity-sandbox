@@ -146,9 +146,15 @@ says so before creating anything. Use `sandbox-local` for that combination.
 - `agy-sandbox upgrade [--host-browser] [-p HOST:SANDBOX] [--no-attach]`
   Applies additions in place: new kits or agents (`sbx kit add`, binaries included), env, ports, the
   host browser. Refuses anything else and names the command to use.
-- `agy-sandbox recreate [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
+- `agy-sandbox recreate [--as NAME] [--host-browser] [-p HOST:SANDBOX] [--no-attach] [-y]`
   Rebuilds the sandbox from a snapshot of its own filesystem, carrying kit volumes and the clone
   workspace across, for removed kits, changed kit arguments and a changed login mode.
+  With `--as NAME` it builds a second sandbox called NAME beside this one and leaves the original
+  untouched, so you can check the copy and remove the old one (`sbx rm`) when satisfied. A sandbox
+  built by agy-sandbox 0.5 ran its sessions as root; the copy is converted to the agent user and the
+  old root home is moved into `/home/agent`. Afterwards a full file-by-file comparison of the two
+  sandboxes is written to `~/.agy-sandbox/recreate-<name>-<timestamp>.txt` and summarised, so you can
+  confirm nothing was lost before you delete the original.
 - `agy-sandbox down [-y]`
   Removes the sandbox after the guardian check, and stops a host browser it started.
 
@@ -210,7 +216,11 @@ tools it built, dotfiles it wrote. `up --rebuild` throws all of that away. The t
 the exact `sbx create` command to restore from it if anything fails half way.
 
 Sandboxes created by agy-sandbox 0.5 keep running and `up` resumes them, but they have no saved plan,
-so `upgrade` refuses them; use `recreate` (keeps contents) or `up --rebuild` once to move them to 0.6.
+so `upgrade` refuses them. They also ran their sessions as root. To move one to 0.6 on the agent user
+without losing its contents, use `recreate --as <new-name>`: it builds the upgraded sandbox beside the
+old one, converts the user, migrates the old root home, and verifies the result, so you keep the
+original until you have checked the copy. `recreate` without `--as`, or `up --rebuild`, also work but
+replace the sandbox in place.
 
 ## Code Guardian
 
