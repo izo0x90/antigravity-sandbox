@@ -346,6 +346,9 @@ class TestRecreateNext(UpgradeBase):
         self.assertIsNotNone(compose.load_plan("agy-sandbox-demo"))    # old plan still there
         self.assertTrue(messages_containing(self.out, "is left untouched"))
         self.assertTrue(messages_containing(self.out, "start as 'agent'"))
+        listings = [c for c in m["exec_script"].call_args_list if "find / -xdev" in c[0][1]]
+        self.assertEqual(len(listings), 2)
+        self.assertTrue(all(c.kwargs.get("user") == "root" for c in listings))   # both sides read as root
 
     def test_points_the_config_file_at_the_new_version_only_once_the_data_is_in(self):
         path = Path(self.cwd.name) / "agy.yaml"

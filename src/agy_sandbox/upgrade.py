@@ -237,8 +237,12 @@ def _migrate_root_home(name: str) -> List[str]:
 
 
 def _inventory(name: str, extra_paths: Sequence[str] = ()) -> str:
-    """A full file listing of a sandbox's root filesystem plus any separately-mounted paths."""
-    return sandbox.exec_script(name, inventory.script(extra_paths)).stdout or ""
+    """
+    A full file listing of a sandbox's root filesystem plus any separately-mounted paths. Taken
+    as root on both sides: a plain exec runs as root on a legacy box but as agent on the new one,
+    and the agent cannot see into another user's home, which would read as files gone missing.
+    """
+    return sandbox.exec_script(name, inventory.script(extra_paths), user="root").stdout or ""
 
 
 def recreate_next(config: AgyConfig, cwd: Path, *, attach: bool = True, config_path: Optional[str] = None) -> int:
