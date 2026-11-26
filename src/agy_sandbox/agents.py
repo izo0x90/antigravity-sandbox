@@ -50,7 +50,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
         display_name="Google Antigravity",
         cli_binary="agy",
         read_only_args=("--add-dir", "{cwd}", "--mode", "plan", "--print", "{prompt}"),
-        secret_services=("google", "antigravity"),
+        secret_services=("antigravity",),
         signature_files=("antigravity.yaml",),
         session_files=(".gemini/antigravity-cli",),   # agy keeps its token in the keyring; this appears once agy has run
     ),
