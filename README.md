@@ -28,6 +28,50 @@ the v3 kit format `sbx` builds and runs itself.
 - **Ports, host browser, guardian**: publish sandbox ports, let agents drive a Chrome on your
   machine, and get warned before destroying a sandbox with unsaved work or live logins.
 
+## What changed since 0.4
+
+0.5 was never tagged, so `v0.6.0` carries both. Coming from 0.4 or 0.5, read this first.
+
+### Breaking
+
+- **sbx only.** The plain-Docker runtime is gone (`docker run`, host `~/.gemini` bind mounts, the
+  keyring hack, `--sbx`, `sbx.enabled`). You need the Docker Sandboxes CLI `sbx` 0.50 or newer with
+  its daemon running. In 0.6 Docker itself is not used at all: `sbx` builds the project image from the
+  generated v3 workload kit, so there is no `docker build`, no `docker save` and no template store.
+- **`update-base` is removed.** Base-image maintenance is `sbx`'s job now; `up --rebuild` rebuilds
+  the project image.
+- **Logins are one switch**, `auth_mode: sandbox-local | proxy-managed`. `use_native_login` is gone,
+  `sbx_persistent` is now `sandbox-local`, `sbx_proxy` is now `proxy-managed`. Kits no longer guess
+  the mode from whether a host secret happens to exist.
+- **`agy.yaml` is flat.** The `sbx:` block, `workspace_path` and `runtime:` are gone (`runtime:`
+  became `build_args`). Pre-0.5 files still load, every command prints exactly which keys changed,
+  and `agy-sandbox config migrate` rewrites the file.
+- **New sandboxes have new names and `agy.yaml` gets written to.** The first time a project creates
+  a sandbox, agy-sandbox records a `sandbox_id` and `sandbox_version` in `agy.yaml` (only those two
+  lines) and names the sandbox `agy-sandbox-<slug>-<20 hex of the id>-v<N>`. Commit the file. A
+  project without an id keeps using its old `agy-sandbox-<slug>` sandbox as long as that exists.
+- **Sandboxes made by 0.5 ran their sessions as root.** They still resume with `up`, but `upgrade`
+  refuses them (no build record). `recreate --next` builds a copy beside them on the agent user, see
+  [Upgrading](#upgrading-a-sandbox-without-losing-its-contents); the original stays until you remove it.
+- **Antigravity is a bundled kit** (`kits/agy`), no longer the remote shelajev/agy-sbx-kit. Its
+  proxy-managed credentials kit declares the same single OAuth credential as upstream (`sbx secret
+  set antigravity`).
+- **Oh My Pi defaults to v19.2.1** (was pinned to v17.2.8); the omp kit takes a `version` argument.
+
+### New
+
+- `upgrade`: apply agy.yaml additions (kits, env, ports, host browser) to a running sandbox in place.
+- `recreate`: rebuild from a snapshot of the sandbox's own filesystem for the changes `sbx` cannot
+  apply in place; `recreate --next` builds the next version beside the current one and points
+  `agy.yaml` at it, converting a root-session sandbox to the agent user along the way.
+- `versions` and `--version N` on `up`, `upgrade`, `recreate` and `down`.
+- `ports` in `agy.yaml` and `up -p HOST:SANDBOX`, published with `sbx port publish` on every `up`.
+- `--no-attach` and `--yes` on the lifecycle commands, for scripts.
+- `env` and `setup_scripts` now work under sbx (they were silently ignored by the 0.4 sbx path):
+  `env` goes to every session, `setup_scripts` run once at creation as the agent user.
+- The build record (what a sandbox was built with) lives inside the sandbox at
+  `/etc/agy-sandbox/plan.json`; nothing about a sandbox is kept on the host.
+
 ## Prerequisites
 
 - **Docker Sandboxes CLI** `sbx` 0.50 or newer with its daemon running (`brew install docker/tap/sbx`).
