@@ -29,7 +29,9 @@ capabilities:
   - type: com.docker.sandbox/lifecycle@1
     config:
       startup:
-        - command: [python3, /home/agent/.local/share/agy-sandbox/chrome_host_relay.py, --host-port, "${{ kit.args.host_port }}"]
+        # One string, not a list: sbx renders a templated list element as a number, which its
+        # validator then rejects ("command must be a string or a list of strings").
+        - command: "python3 /home/agent/.local/share/agy-sandbox/chrome_host_relay.py --host-port ${{ kit.args.host_port }}"
           user: "1000"
           background: true
           env: [HTTP_PROXY, http_proxy]
